@@ -9,11 +9,13 @@ import { CONNECT_TIMEOUT_MS, P2PSession } from "../p2p-session.js";
 const STATION_SN = "T8000P0000000000";
 const P2P_DID = "XXXXXXX-000000-XXXXX";
 
-function harness(lanOnly = false) {
+function harness(lanOnly = false, cloudAddress?: string) {
   const session = new P2PSession({
     stationSn: STATION_SN,
     p2pDid: P2P_DID,
     lanOnly,
+    dskKey: cloudAddress ? "0".repeat(40) : undefined,
+    cloudAddresses: cloudAddress ? [{ host: cloudAddress, port: 32100 }] : undefined,
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   });
   session.on("error", () => undefined);
@@ -41,14 +43,31 @@ function harness(lanOnly = false) {
 }
 
 describe("restricting a session to a private IPv4 peer", () => {
-  it("does not hole-punch a public cloud candidate", () => {
-    const { lookupAddress, sent } = harness(true);
-    lookupAddress("203.0.113.9");
-    expect(sent.some(({ type }) => type.equals(RequestMessageType.CHECK_CAM))).toBe(false);
-    lookupAddress("192.168.1.50");
-    expect(
-      sent.some(({ addr, type }) => addr.host === "192.168.1.50" && type.equals(RequestMessageType.CHECK_CAM)),
-    ).toBe(true);
+  it("asks a public cloud broker while punching only a private candidate", async () => {
+    const broker = "192.0.2.2";
+    const { session, lookupAddress, sent } = harness(true, broker);
+    try {
+      await session.connect();
+      expect(
+        sent.some(
+          ({ addr, type }) =>
+            addr.host === broker &&
+            (type.equals(RequestMessageType.LOOKUP_WITH_KEY) || type.equals(RequestMessageType.LOOKUP_WITH_KEY2)),
+        ),
+      ).toBe(true);
+
+      lookupAddress("203.0.113.9");
+      expect(
+        sent.some(({ addr, type }) => addr.host === "203.0.113.9" && type.equals(RequestMessageType.CHECK_CAM)),
+      ).toBe(false);
+
+      lookupAddress("192.168.1.50");
+      expect(
+        sent.some(({ addr, type }) => addr.host === "192.168.1.50" && type.equals(RequestMessageType.CHECK_CAM)),
+      ).toBe(true);
+    } finally {
+      await session.close();
+    }
   });
 
   it("refuses a peer outside it, and tells the station to drop the session it opened", () => {
