@@ -376,6 +376,8 @@ export class P2PSession extends EventEmitter {
   private cloudLookup?: { key: string; addresses: Address[] };
   /** Local outbound IPv4 reported inside LOOKUP_WITH_KEY requests. */
   private selfHost?: string;
+  /** Non-private candidate hosts refused during this connection attempt. */
+  private readonly refusedHosts = new Set<string>();
   /** In-flight multi-datagram frame per data channel (see onData). */
   private readonly pendingByDataType = new Map<number, { header: P2PDataFrameHeader; buf: Buffer }>();
   /** Last delivered datagram sequence number per data type. */
@@ -668,6 +670,7 @@ export class P2PSession extends EventEmitter {
     if (this.connecting || this.connected) return;
     this.connecting = true;
     this.closed = false;
+    this.refusedHosts.clear();
     this.connectionGeneration += 1;
     this.resetInboundSequencing();
     if (!this.level2Key) {
@@ -709,7 +712,11 @@ export class P2PSession extends EventEmitter {
     this.lookupTimer = setInterval(() => this.sendLookups(), LOOKUP_RETRY_MS);
     this.connectTimer = setTimeout(() => {
       if (!this.connected) {
-        this.emit("error", new Error(`P2P connect timeout for ${this.cfg.stationSn}`));
+        const refused =
+          this.cfg.lanOnly && this.refusedHosts.size
+            ? `; lanOnly refused non-private candidates ${[...this.refusedHosts].join(", ")}. Set localAddresses for this station or turn lanOnly off`
+            : "";
+        this.emit("error", new Error(`P2P connect timeout for ${this.cfg.stationSn}${refused}`));
         void this.close();
       }
     }, CONNECT_TIMEOUT_MS);
@@ -776,7 +783,7 @@ export class P2PSession extends EventEmitter {
   }
 
   private sendLookups(): void {
-    if (this.closed || this.connected || !this.socket) return;
+    if (this.connected || !this.socket) return;
     // Local: broadcast + (optionally) the known LAN address.
     const localPayload = buildLocalLookupPayload();
     if (!this.cfg.noBroadcast)
@@ -793,18 +800,17 @@ export class P2PSession extends EventEmitter {
     // was ALSO reproducible via LOOKUP_WITH_KEY, so KEY2 (0xf16a) adds no observed candidate KEY
     // doesn't already surface — it's sent only as a same-tick fallback for the brief window before
     // `selfHost` is known (usually just the first tick or two after connect()).
-    if (this.cloudLookup) {
-      for (const socket of [this.socket, ...this.probeSockets]) this.sendCloudLookup(socket);
+    const lookup = this.cloudLookup;
+    if (lookup) {
+      for (const socket of [this.socket, ...this.probeSockets]) this.sendCloudLookup(socket, lookup);
       this.logger.debug(
-        `[p2p] ${this.cfg.stationSn} sendLookups: cloud -> ${this.cloudLookup.addresses.map((a) => `${a.host}:${a.port}`).join(", ")} self=${this.selfHost ?? "unknown"}`,
+        `[p2p] ${this.cfg.stationSn} sendLookups: cloud -> ${lookup.addresses.map((a) => `${a.host}:${a.port}`).join(", ")} self=${this.selfHost ?? "unknown"}`,
       );
     }
   }
 
   /** Register a bound socket's own port with each configured cloud lookup address. */
-  private sendCloudLookup(socket: dgram.Socket): void {
-    const lookup = this.cloudLookup;
-    if (!lookup) return;
+  private sendCloudLookup(socket: dgram.Socket, lookup: { key: string; addresses: Address[] }): void {
     const payload = this.selfHost
       ? buildLookupWithKeyPayload(this.cfg.p2pDid, this.selfHost, socket.address().port, lookup.key)
       : buildLookupWithKeyPayload2(this.cfg.p2pDid, lookup.key);
@@ -870,7 +876,10 @@ export class P2PSession extends EventEmitter {
   }
 
   private beginCheckCam(addr: Address, socket: dgram.Socket): void {
-    if (this.cfg.lanOnly && !isPrivateIpv4(addr.host)) return;
+    if (this.cfg.lanOnly && !isPrivateIpv4(addr.host)) {
+      this.refusedHosts.add(addr.host);
+      return;
+    }
     this.logger.debug(`[p2p] ${this.cfg.stationSn} beginCheckCam -> ${addr.host}:${addr.port} (+/-3)`);
     const payload = buildCheckCamPayload(this.cfg.p2pDid);
     // Hole-punch the reported port and a small neighbourhood (NAT remapping).
@@ -918,11 +927,7 @@ export class P2PSession extends EventEmitter {
     for (const probe of this.probeSockets) {
       if (probe === winner) continue;
       probe.removeAllListeners("message");
-      try {
-        probe.close();
-      } catch {
-        /* already closed */
-      }
+      probe.close();
     }
     this.probeSockets = [];
   }
@@ -930,6 +935,7 @@ export class P2PSession extends EventEmitter {
   private onConnected(addr: Address, socket: dgram.Socket): void {
     if (this.connected) return;
     if (this.cfg.lanOnly && !isPrivateIpv4(addr.host)) {
+      this.refusedHosts.add(addr.host);
       this.logger.debug(`[p2p] ${this.cfg.stationSn} refusing non-private peer ${addr.host}:${addr.port}`);
       this.send(addr, RequestMessageType.END, undefined, socket);
       return;
@@ -1762,10 +1768,9 @@ export class P2PSession extends EventEmitter {
    * numbering and the half-assembled frame goes — because ignoring it would freeze the mark, and every
    * datagram of the new numbering would then be read as behind it too, for as long as it took to climb back.
    *
-   * A forward gap means a datagram has not arrived YET, which is not the same as lost. Because the device
-   * repeats whatever goes unacknowledged, the missing datagram is usually about to arrive again — so the
-   * ones that overtook it are held and delivery stays strictly in sequence, letting the repeat slot into
-   * place and complete the frame. A logical frame's payload spans datagrams that carry no header of their
+   * A forward gap means a datagram has not arrived YET, which is not the same as lost. The device repeats
+   * unacknowledged datagrams, so successors are held for a bounded wait and delivered strictly in sequence
+   * if the missing one arrives. A logical frame's payload spans datagrams that carry no header of their
    * own, so reassembling around a hole is impossible; waiting for it is what keeps the frame whole.
    *
    * Only once {@link REORDER_WAIT_MS} passes, or {@link REORDER_MAX_DATAGRAMS} pile up, is the datagram
@@ -1833,7 +1838,7 @@ export class P2PSession extends EventEmitter {
     if (!reorder?.held.size) return;
     this.clearReorderTimer(dataType);
     for (;;) {
-      const next = ((this.lastSeqByType.get(dataType) ?? 0) + 1) & 0xffff;
+      const next = (this.lastSeqByType.get(dataType)! + 1) & 0xffff;
       const body = reorder.held.get(next);
       if (body === undefined) break;
       reorder.held.delete(next);
@@ -1849,14 +1854,11 @@ export class P2PSession extends EventEmitter {
    * resume from the earliest datagram still held so the stream keeps moving.
    */
   private abandonHole(dataType: number): void {
-    this.clearReorderTimer(dataType);
-    const reorder = this.reorderByType.get(dataType);
-    if (!reorder?.held.size) return;
-    const held = reorder.held;
+    const held = this.reorderByType.get(dataType)!.held;
     if (this.pendingByDataType.has(dataType) && this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS)
       this.trace({ phase: "datagram-gap", dataType });
     this.pendingByDataType.delete(dataType);
-    const last = this.lastSeqByType.get(dataType) ?? 0;
+    const last = this.lastSeqByType.get(dataType)!;
     const earliest = [...held.keys()].sort((a, b) => ((a - last) & 0xffff) - ((b - last) & 0xffff))[0];
     this.lastSeqByType.set(dataType, (earliest - 1) & 0xffff);
     this.drainReorder(dataType);

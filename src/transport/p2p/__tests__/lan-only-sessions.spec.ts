@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { frameMessage, ResponseMessageType, RequestMessageType } from "../codec.js";
-import { P2PSession } from "../p2p-session.js";
+import { CONNECT_TIMEOUT_MS, P2PSession } from "../p2p-session.js";
 
 /**
  * An RFC-1918 restriction rejects a public cloud candidate before CHECK_CAM and refuses an unsolicited
@@ -51,12 +51,6 @@ describe("restricting a session to a private IPv4 peer", () => {
     ).toBe(true);
   });
 
-  it("keeps a private peer", () => {
-    const { session, answerFrom } = harness(true);
-    answerFrom("192.168.1.50");
-    expect(session.isConnected).toBe(true);
-  });
-
   it("refuses a peer outside it, and tells the station to drop the session it opened", () => {
     const { session, sent, answerFrom } = harness(true);
     answerFrom("203.0.113.9");
@@ -72,6 +66,27 @@ describe("restricting a session to a private IPv4 peer", () => {
     answerFrom("203.0.113.9");
     answerFrom("192.168.1.50");
     expect(session.isConnected).toBe(true);
+  });
+
+  it("names refused candidates and the configuration fix when connect times out", async () => {
+    vi.useFakeTimers();
+    const { session, lookupAddress, answerFrom } = harness(true);
+    const errors: Error[] = [];
+    session.on("error", (error) => errors.push(error));
+    try {
+      await session.connect();
+      lookupAddress("203.0.113.9");
+      answerFrom("198.51.100.10");
+      vi.advanceTimersByTime(CONNECT_TIMEOUT_MS);
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]!.message).toContain("203.0.113.9, 198.51.100.10");
+      expect(errors[0]!.message).toContain("localAddresses");
+      expect(errors[0]!.message).toContain("turn lanOnly off");
+    } finally {
+      vi.useRealTimers();
+      await session.close();
+    }
   });
 
   it("keeps whichever peer answers first when unrestricted", () => {

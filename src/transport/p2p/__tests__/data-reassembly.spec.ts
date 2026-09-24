@@ -227,7 +227,7 @@ describe("P2P data reassembly", () => {
       expect(vi.getTimerCount()).toBe(0);
       feed(dataPacket(5, commandFrame(5, 1300, payload)));
       feed(dataPacket(6, commandFrame(6, 1301, Buffer.from([1]))));
-      vi.advanceTimersByTime(250);
+      vi.runAllTimers();
 
       expect(received.map(({ commandId }) => commandId)).toEqual([1300, 1300, 1301]);
       expect(received[1]!.raw).toEqual(payload);
@@ -249,7 +249,7 @@ describe("P2P data reassembly", () => {
       feed(dataPacket(0, restarted.subarray(0, 24)));
       feed(dataPacket(1, restarted.subarray(24)));
       feed(dataPacket(2, commandFrame(2, 1301, Buffer.from([1, 2, 3]))));
-      vi.advanceTimersByTime(250);
+      vi.runAllTimers();
 
       expect(received.map(({ commandId }) => commandId)).toEqual([1300, 1301]);
       expect(received[0]!.raw).toEqual(payload);
