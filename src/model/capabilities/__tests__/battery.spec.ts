@@ -7,6 +7,7 @@ import {
   WORKING_MODE_MAPS,
   WorkingMode,
   PowerSource,
+  cameraPowerTier,
   type BatteryActions,
   type WorkingModeName,
   type PowerSourceName,
@@ -33,6 +34,32 @@ const evidenced = (over: Partial<CommandContext> = {}): CommandContext => ({
 });
 
 describe("battery capability module", () => {
+  it("classifies mains-only cameras while budgeting every camera with a physical cell", () => {
+    const battery = new Set(["battery"]);
+    expect(cameraPowerTier("T8425P00", battery)).toBe("wired");
+    expect(cameraPowerTier("T8423P00", battery)).toBe("wired");
+    expect(cameraPowerTier("T8410P00", battery)).toBe("wired");
+    expect(cameraPowerTier("T8114P00", new Set())).toBe("wired");
+    expect(cameraPowerTier("T8114P00", battery)).toBe("battery");
+    expect(cameraPowerTier("T8214P00", battery)).toBe("battery");
+  });
+
+  it("offers the same local power override on every bound battery device", () => {
+    let override: "auto" | "always-on" | "battery" = "auto";
+    const powerOverride = {
+      getOverride: () => override,
+      setOverride: (next: typeof override) => {
+        override = next;
+      },
+    };
+    const camera = bind<BatteryActions>("battery", evidenced(), { powerOverride }).acts;
+    const sensor = bind<BatteryActions>("battery", evidenced({ codec: "sensor" }), { powerOverride }).acts;
+    expect(camera.powerOverride?.()).toBe("auto");
+    sensor.setPowerOverride?.("always-on");
+    expect(camera.powerOverride?.()).toBe("always-on");
+    camera.setPowerOverride?.("battery");
+    expect(sensor.powerOverride?.()).toBe("battery");
+  });
   it("exposes WorkingMode + PowerSource enums with the app's canonical values", () => {
     expect(WorkingMode.OptimalBatteryLife).toBe("Optimal Battery Life");
     expect(WorkingMode.CustomizeRecording).toBe("Customize Recording");
@@ -86,8 +113,8 @@ describe("battery capability module", () => {
     const published = (model: string | undefined) =>
       new Set(propertiesOf(BATTERY.members!, { model } as AvailabilityContext).map((p) => p.paramType));
 
-    // T8425 Floodlight, T8419 Indoor, T8410 Indoor Pan & Tilt — all mains-only.
-    for (const model of ["T8425P00", "T8419P00", "T8410P00"]) {
+    // Mains-only floodlight and indoor models must withhold cell readings.
+    for (const model of ["T8425P00", "T8423P00", "T8419P00", "T8410P00"]) {
       for (const param of CELL_PARAMS) {
         expect(published(model), `${model} still publishes ${param}`).not.toContain(param);
       }

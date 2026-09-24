@@ -214,6 +214,20 @@ describe("SharedLiveSource", () => {
     expect(last().nudged).toBe(at);
   });
 
+  it.each([0, -1, 0.5, Number.NaN, "fast", 3e9])("uses safe defaults for invalid warm-up timing %s", (invalid) => {
+    const { source, last } = mk({ warmRetryMs: invalid as number, warmTimeoutMs: invalid as number });
+    const consumer = source.attach();
+    consumer.on("error", () => undefined);
+    vi.advanceTimersByTime(1999);
+    expect(last().nudged).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(last().nudged).toBe(1);
+    vi.advanceTimersByTime(17999);
+    expect(source.state).toBe("warming");
+    vi.advanceTimersByTime(1);
+    expect(source.state).toBe("stopped");
+  });
+
   it("stalls: emits error to consumers and tears down when no keyframe arrives in the warm window", () => {
     const { source, last } = mk({ warmRetryMs: 2000, warmTimeoutMs: 6000 });
     const c = source.attach();
@@ -235,6 +249,37 @@ describe("SharedLiveSource", () => {
     vi.advanceTimersByTime(60000);
     expect(budgeted).toBe(false);
     expect(last().stopped).toBe(0); // still streaming
+  });
+
+  it("starts a budget when an already-live source changes from always-on to battery", () => {
+    const { source, last } = mk({ powered: "wired", batteryBudgetMs: 5000, budgetGraceMs: 1000 });
+    const consumer = source.attach();
+    let notices = 0;
+    consumer.on("budget", () => notices++);
+    last().video(frame(true));
+    vi.advanceTimersByTime(5000);
+    expect(notices).toBe(0);
+    source.setPowerTier("battery");
+    vi.advanceTimersByTime(4999);
+    expect(notices).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(notices).toBe(1);
+    vi.advanceTimersByTime(1000);
+    expect(last().stopped).toBe(1);
+  });
+
+  it("cancels a pending battery stop when an active source becomes always-on", () => {
+    const { source, last } = mk({ powered: "battery", batteryBudgetMs: 5000, budgetGraceMs: 1000 });
+    const consumer = source.attach();
+    let notice: { extend: (ms?: number) => void } | undefined;
+    consumer.on("budget", (next) => (notice = next));
+    last().video(frame(true));
+    vi.advanceTimersByTime(5000);
+    expect(notice).toBeDefined();
+    source.setPowerTier("wired");
+    notice?.extend();
+    vi.advanceTimersByTime(20000);
+    expect(last().stopped).toBe(0);
   });
 
   it("battery source emits a budget notice after the budget, then auto-stops without extend", () => {
