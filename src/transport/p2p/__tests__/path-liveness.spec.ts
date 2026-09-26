@@ -1,3 +1,4 @@
+import type dgram from "node:dgram";
 import { describe, expect, it, vi } from "vitest";
 import { P2PSession } from "../p2p-session.js";
 import { LIVE_TRACE_MESSAGE } from "../live-trace.js";
@@ -25,25 +26,24 @@ function session() {
     lastPeerAt?: number;
     connected: boolean;
     heartbeat: () => void;
+    socket: dgram.Socket;
   };
   internals.connectAddress = { host: "203.0.113.1", port: 32100 };
   internals.connected = true;
+  internals.socket = { send: vi.fn() } as unknown as dgram.Socket;
   return { built, internals, debug };
 }
 
 const traces = (debug: ReturnType<typeof vi.fn>) =>
   debug.mock.calls.filter(([message]) => message === LIVE_TRACE_MESSAGE).map(([, trace]) => trace);
 
-/** Deliver a framed peer packet to the session without binding a UDP port. */
-function receive(built: P2PSession, type: Buffer, address: string, port = 32100): void {
+/** Deliver a framed peer packet without binding a UDP port. */
+function receive(built: P2PSession, type: Buffer, address: string, port = 32100, socket?: dgram.Socket): void {
   const target = built as unknown as {
-    onMessage: (
-      msg: Buffer,
-      remote: { address: string; port: number },
-      socket: { send: ReturnType<typeof vi.fn> },
-    ) => void;
+    socket: dgram.Socket;
+    onMessage: (msg: Buffer, remote: { address: string; port: number }, socket: dgram.Socket) => void;
   };
-  target.onMessage(frameMessage(type), { address, port }, { send: vi.fn() });
+  target.onMessage(frameMessage(type), { address, port }, socket ?? target.socket);
 }
 
 describe("a session's path liveness", () => {
@@ -82,6 +82,16 @@ describe("a session's path liveness", () => {
     internals.lastPeerAt = Date.now() - 16_000;
     receive(built, ResponseMessageType.PING, "203.0.113.2");
     receive(built, ResponseMessageType.PONG, "203.0.113.1", 32101);
+    expect(built.pathAnswering).toBe(false);
+    receive(built, ResponseMessageType.PING, "203.0.113.1");
+    expect(built.pathAnswering).toBe(true);
+  });
+
+  it("ignores traffic from the same endpoint on a socket that lost the handshake", () => {
+    const { built, internals } = session();
+    internals.lastPeerAt = Date.now() - 16_000;
+    const losingSocket = { send: vi.fn() } as unknown as dgram.Socket;
+    receive(built, ResponseMessageType.PING, "203.0.113.1", 32100, losingSocket);
     expect(built.pathAnswering).toBe(false);
     receive(built, ResponseMessageType.PING, "203.0.113.1");
     expect(built.pathAnswering).toBe(true);

@@ -1,3 +1,4 @@
+import type dgram from "node:dgram";
 import { describe, expect, it, vi } from "vitest";
 import { frameMessage, ResponseMessageType, RequestMessageType } from "../codec.js";
 import { CONNECT_TIMEOUT_MS, P2PSession } from "../p2p-session.js";
@@ -19,14 +20,12 @@ function harness(lanOnly = false, cloudAddress?: string) {
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   });
   session.on("error", () => undefined);
-  const sent: { addr: { host: string; port: number }; type: Buffer }[] = [];
+  const sent: { addr: { host: string; port: number }; type: Buffer; socket?: dgram.Socket }[] = [];
   const target = session as unknown as {
-    socket: object;
-    onMessage: (message: Buffer, info: { address: string; port: number }) => void;
-    send: (addr: { host: string; port: number }, type: Buffer) => void;
+    onMessage: (message: Buffer, info: { address: string; port: number }, socket?: dgram.Socket) => void;
+    send: (addr: { host: string; port: number }, type: Buffer, payload?: Buffer, socket?: dgram.Socket) => void;
   };
-  target.socket = {};
-  target.send = (addr, type) => sent.push({ addr, type });
+  target.send = (addr, type, _payload, socket) => sent.push({ addr, type, socket });
   return {
     session,
     sent,
@@ -37,8 +36,8 @@ function harness(lanOnly = false, cloudAddress?: string) {
       target.onMessage(frameMessage(ResponseMessageType.LOOKUP_ADDR, payload), { address: "203.0.113.1", port: 32100 });
     },
     /** A station answering our CHECK_CAM from `host` — the moment a peer would be kept. */
-    answerFrom: (host: string, port = 4000) =>
-      target.onMessage(frameMessage(ResponseMessageType.CAM_ID), { address: host, port }),
+    answerFrom: (host: string, port = 4000, socket?: dgram.Socket) =>
+      target.onMessage(frameMessage(ResponseMessageType.CAM_ID), { address: host, port }, socket),
   };
 }
 
@@ -70,21 +69,46 @@ describe("restricting a session to a private IPv4 peer", () => {
     }
   });
 
-  it("refuses a peer outside it, and tells the station to drop the session it opened", () => {
+  it("refuses a peer outside it, and tells the station to drop the session it opened", async () => {
     const { session, sent, answerFrom } = harness(true);
-    answerFrom("203.0.113.9");
-
-    expect(session.isConnected).toBe(false);
-    expect(sent.some(({ addr, type }) => addr.host === "203.0.113.9" && type.equals(RequestMessageType.END))).toBe(
-      true,
-    );
+    try {
+      await session.connect();
+      answerFrom("203.0.113.9");
+      expect(session.isConnected).toBe(false);
+      expect(sent.some(({ addr, type }) => addr.host === "203.0.113.9" && type.equals(RequestMessageType.END))).toBe(
+        true,
+      );
+    } finally {
+      await session.close();
+    }
   });
 
-  it("still settles on a local peer that answers after one was refused", () => {
+  it("still settles on a local peer that answers after one was refused", async () => {
     const { session, answerFrom } = harness(true);
-    answerFrom("203.0.113.9");
-    answerFrom("192.168.1.50");
-    expect(session.isConnected).toBe(true);
+    try {
+      await session.connect();
+      answerFrom("203.0.113.9");
+      answerFrom("192.168.1.50");
+      expect(session.isConnected).toBe(true);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("keeps a probe socket available after refusing a public peer on it", async () => {
+    const { session, sent, answerFrom } = harness(true, "192.0.2.2");
+    try {
+      await session.connect();
+      const probe = (session as unknown as { probeSockets: dgram.Socket[] }).probeSockets[0]!;
+      answerFrom("203.0.113.9", 4000, probe);
+      expect(session.isConnected).toBe(false);
+      expect(sent.some(({ type, socket }) => type.equals(RequestMessageType.END) && socket === probe)).toBe(true);
+      answerFrom("192.168.1.50", 4000, probe);
+      expect(session.isConnected).toBe(true);
+      expect((session as unknown as { socket: dgram.Socket }).socket).toBe(probe);
+    } finally {
+      await session.close();
+    }
   });
 
   it("names refused candidates and the configuration fix when connect times out", async () => {
@@ -108,9 +132,14 @@ describe("restricting a session to a private IPv4 peer", () => {
     }
   });
 
-  it("keeps whichever peer answers first when unrestricted", () => {
+  it("keeps whichever peer answers first when unrestricted", async () => {
     const { session, answerFrom } = harness();
-    answerFrom("203.0.113.9");
-    expect(session.isConnected).toBe(true);
+    try {
+      await session.connect();
+      answerFrom("203.0.113.9");
+      expect(session.isConnected).toBe(true);
+    } finally {
+      await session.close();
+    }
   });
 });

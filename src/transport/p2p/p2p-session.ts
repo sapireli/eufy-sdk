@@ -832,7 +832,10 @@ export class P2PSession extends EventEmitter {
   private onMessage(msg: Buffer, rinfo: dgram.RemoteInfo, socket = this.socket): void {
     if (!socket) return;
     const fromConnectedPeer =
-      this.connected && this.connectAddress?.host === rinfo.address && this.connectAddress.port === rinfo.port;
+      this.connected &&
+      socket === this.socket &&
+      this.connectAddress?.host === rinfo.address &&
+      this.connectAddress.port === rinfo.port;
     if (
       fromConnectedPeer &&
       (hasHeader(msg, ResponseMessageType.PONG) ||
