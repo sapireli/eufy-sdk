@@ -272,6 +272,8 @@ export interface P2PSessionConfig {
   localAddress?: string;
   /** Disable UDP broadcast local lookup (e.g. cloud-only). Default false. */
   noBroadcast?: boolean;
+  /** Return false to refuse a P2P peer before handshake or connection; cloud lookup is unaffected. */
+  acceptPeer?: (peer: { readonly host: string; readonly port: number }) => boolean;
   /**
    * Resolve a station `cipher_id` → its ECC private key hex (from cloud `get_ciphers`). When
    * provided, the session auto-negotiates the **level-2** session key on connect: it reads the
@@ -390,6 +392,8 @@ export class P2PSession extends EventEmitter {
   private cloudLookup?: { key: string; addresses: Address[] };
   /** Local outbound IPv4 reported inside LOOKUP_WITH_KEY requests. */
   private selfHost?: string;
+  /** Candidate hosts refused during this connection attempt. */
+  private readonly refusedHosts = new Set<string>();
   /**
    * In-flight multi-datagram frame per data channel (see reassemble): the payload gathered so far under its
    * parsed header, or, without a header, the start of a frame header cut by the datagram boundary.
@@ -710,6 +714,7 @@ export class P2PSession extends EventEmitter {
     if (this.connecting || this.connected) return;
     this.connecting = true;
     this.closed = false;
+    this.refusedHosts.clear();
     this.connectionGeneration += 1;
     this.resetInboundSequencing();
     if (!this.level2Key) {
@@ -752,7 +757,11 @@ export class P2PSession extends EventEmitter {
     this.lookupTimer = setInterval(() => this.sendLookups(), LOOKUP_RETRY_MS);
     this.connectTimer = setTimeout(() => {
       if (!this.connected) {
-        this.emit("error", new Error(`P2P connect timeout for ${this.cfg.stationSn}`));
+        const refused =
+          this.cfg.acceptPeer && this.refusedHosts.size
+            ? `; peer policy refused candidates ${[...this.refusedHosts].join(", ")}. Check acceptP2PPeer or localAddresses for this station`
+            : "";
+        this.emit("error", new Error(`P2P connect timeout for ${this.cfg.stationSn}${refused}`));
         void this.close();
       }
     }, CONNECT_TIMEOUT_MS);
@@ -900,6 +909,10 @@ export class P2PSession extends EventEmitter {
   }
 
   private beginCheckCam(addr: Address, socket: dgram.Socket): void {
+    if (this.cfg.acceptPeer?.(addr) === false) {
+      this.refusedHosts.add(addr.host);
+      return;
+    }
     this.logger.debug(`[p2p] ${this.cfg.stationSn} beginCheckCam -> ${addr.host}:${addr.port} (+/-3)`);
     const payload = buildCheckCamPayload(this.cfg.p2pDid);
     // Hole-punch the reported port and a small neighbourhood (NAT remapping).
@@ -954,6 +967,12 @@ export class P2PSession extends EventEmitter {
 
   private onConnected(addr: Address, socket: dgram.Socket): void {
     if (this.connected) return;
+    if (this.cfg.acceptPeer?.(addr) === false) {
+      this.refusedHosts.add(addr.host);
+      this.logger.debug(`[p2p] ${this.cfg.stationSn} refusing peer ${addr.host}:${addr.port}`);
+      this.send(addr, RequestMessageType.END, undefined, socket);
+      return;
+    }
     this.stopPunchProbes(socket);
     if (this.socket !== socket) {
       this.socket?.removeAllListeners();
