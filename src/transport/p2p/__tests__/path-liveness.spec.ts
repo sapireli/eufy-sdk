@@ -31,6 +31,7 @@ function session() {
     connectAddress?: { host: string; port: number };
     lastPongAt?: number;
     connected: boolean;
+    heartbeat: () => void;
   };
   internals.connectAddress = { host: "203.0.113.1", port: 32100 };
   internals.connected = true;
@@ -67,6 +68,17 @@ describe("a session's path liveness", () => {
   it("answers that a path which never ponged is not known to be dead", () => {
     const { built } = session();
     expect(built.pathAnswering).toBe(true);
+  });
+
+  it("signals an unanswered heartbeat on a previously answering path", () => {
+    const { built, internals } = session();
+    const stale = vi.fn();
+    built.on("pathStale", stale);
+    internals.heartbeat();
+    expect(stale).not.toHaveBeenCalled();
+    internals.lastPongAt = Date.now() - 16_000;
+    internals.heartbeat();
+    expect(stale).toHaveBeenCalledOnce();
   });
 
   it("states the silence once, rather than on every heartbeat", () => {
