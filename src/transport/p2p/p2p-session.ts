@@ -70,6 +70,15 @@ const HEARTBEAT_MS = 5_000;
 const PATH_SILENCE_MS = HEARTBEAT_MS * 3;
 const LOOKUP_RETRY_MS = 1_000;
 /**
+ * The receive buffer a session's socket asks the OS for.
+ *
+ * A station sends a keyframe as one burst: measured on a HomeBase 3, up to 161 video datagrams of 1074 bytes
+ * within 10 ms. With the Linux default buffer of 212992 bytes, the kernel dropped part of such bursts before
+ * the socket was read, and the frames those datagrams belonged to arrived incomplete. 4 MiB queues many
+ * such bursts, so a keyframe survives the event loop being busy elsewhere for a moment.
+ */
+const RECEIVE_BUFFER_BYTES = 4 * 1024 * 1024;
+/**
  * How long a station is given to answer a lookup before the connection gives up on it and closes.
  *
  * The whole deadline for reaching a station: the lookups are re-sent every second until one is answered, and
@@ -228,6 +237,13 @@ interface RetainedDatagram {
 const CMD_SET_PAYLOAD = 1350;
 /** CMD_NOTIFY_PAYLOAD (1351) — the station's unsolicited JSON notification. */
 const CMD_NOTIFY_PAYLOAD = 1351;
+/**
+ * The one reply body read for a result code besides the bare four-byte int32: a `CMD_SET_PAYLOAD` answer of
+ * exactly this many bytes, carrying the int32 LE code followed by nothing but zero padding. The length is
+ * not 16-byte aligned, so the level-1 decrypt never opens such a body, and no level-1 plaintext — always a
+ * whole number of blocks — can have it.
+ */
+const PADDED_RESULT_BYTES = 132;
 /** CMD_CAMERA_INFO — a camera reporting its OWN params, as a root-level array. */
 const CMD_CAMERA_INFO = 1103;
 const CMD_DATABASE_IMAGE = 1308;
@@ -335,6 +351,8 @@ export class P2PSession extends EventEmitter {
   private connected = false;
   private connecting = false;
   private closed = false;
+  /** Whether a short receive buffer has been reported, so a reconnect does not repeat the same warning. */
+  private receiveBufferReported = false;
   private connectAddress?: Address;
   private seqNumber = 0;
   /**
@@ -376,8 +394,11 @@ export class P2PSession extends EventEmitter {
   private selfHost?: string;
   /** Candidate hosts refused during this connection attempt. */
   private readonly refusedHosts = new Set<string>();
-  /** In-flight multi-datagram frame per data channel (see onData). */
-  private readonly pendingByDataType = new Map<number, { header: P2PDataFrameHeader; buf: Buffer }>();
+  /**
+   * In-flight multi-datagram frame per data channel (see reassemble): the payload gathered so far under its
+   * parsed header, or, without a header, the start of a frame header cut by the datagram boundary.
+   */
+  private readonly pendingByDataType = new Map<number, { header?: P2PDataFrameHeader; buf: Buffer }>();
   /** Last delivered datagram sequence number per data type. */
   private readonly lastSeqByType = new Map<number, number>();
   /** Held datagrams and their active gap timer, grouped by data type. */
@@ -663,6 +684,31 @@ export class P2PSession extends EventEmitter {
     return this.connected;
   }
 
+  /**
+   * Ask the OS for {@link RECEIVE_BUFFER_BYTES} on a bound socket, and warn once per session when it grants
+   * less or refuses.
+   *
+   * The request is made here rather than through `createSocket`'s `recvBufferSize`: Node applies that option
+   * inside the bind callback, where a refusal is thrown out of reach of this session and ends the process.
+   */
+  private requestReceiveBuffer(socket: dgram.Socket): void {
+    let granted: number;
+    try {
+      socket.setRecvBufferSize(RECEIVE_BUFFER_BYTES);
+      granted = socket.getRecvBufferSize();
+    } catch {
+      granted = 0;
+    }
+    if (granted >= RECEIVE_BUFFER_BYTES || this.receiveBufferReported) return;
+    this.receiveBufferReported = true;
+    this.logger.warn(
+      `[p2p] ${this.cfg.stationSn} UDP receive buffer below the ${RECEIVE_BUFFER_BYTES} bytes requested` +
+        (granted > 0 ? ` (granted ${granted})` : " (request refused)") +
+        `; live video can lose keyframes. Raise the OS limit (net.core.rmem_max on Linux, ` +
+        `kern.ipc.maxsockbuf on BSD) to at least ${RECEIVE_BUFFER_BYTES}.`,
+    );
+  }
+
   /** Open the socket and start the lookup → hole-punch handshake. */
   async connect(): Promise<void> {
     if (this.connecting || this.connected) return;
@@ -689,6 +735,7 @@ export class P2PSession extends EventEmitter {
         } catch {
           /* broadcast not permitted — cloud path still works */
         }
+        this.requestReceiveBuffer(socket);
         resolve();
       });
     });
@@ -1850,7 +1897,13 @@ export class P2PSession extends EventEmitter {
     reorder.timer = undefined;
   }
 
-  /** Reassemble one in-sequence datagram body into logical frames. */
+  /**
+   * Reassemble one in-sequence datagram body into logical frames.
+   *
+   * Frames are packed back to back, so a frame header can itself be cut by a datagram boundary. The start
+   * of a header left at the end of a datagram is carried into the next one rather than discarded; dropping
+   * it would lose that frame and every frame after it until a datagram happened to begin on a header.
+   */
   private reassemble(dataType: number, datagramBody: Buffer): void {
     const pending = this.pendingByDataType.get(dataType);
     let body = pending ? Buffer.concat([pending.buf, datagramBody]) : datagramBody;
@@ -1877,6 +1930,13 @@ export class P2PSession extends EventEmitter {
       }
       this.handleFrame(header, payload.subarray(0, header.bytesToRead), dataType);
       body = body.subarray(P2P_DATA_HEADER_BYTES + header.bytesToRead);
+    }
+    if (
+      body.length > 0 &&
+      body.length < P2P_DATA_HEADER_BYTES &&
+      MAGIC_WORD.startsWith(body.subarray(0, 4).toString())
+    ) {
+      this.pendingByDataType.set(dataType, { buf: body });
     }
   }
 
@@ -2006,13 +2066,17 @@ export class P2PSession extends EventEmitter {
     // does, and a direct-binary switch is the write with the least other confirmation to fall back
     // on. An allowlist of wrappers would keep those silent.
     //
-    // The body must be exactly four bytes, not merely long enough: on the wire a control reply is a
+    // A bare result is exactly four bytes, not merely long enough: on the wire a control reply is a
     // 36-byte sign-8 frame carrying four bytes of plaintext, measured across two captures. A frame
     // the decrypt above could not open stays ciphertext — the level-1 path needs 16-byte alignment
     // and the level-2 path can decline — and ciphertext is neither JSON nor four bytes, so a length
     // test alone would read its first word and report a fabricated code for a command whose answer
     // was never recovered. Media is excluded because its bodies are never control plaintext.
-    if (!isMedia && !frame.json && data.length === 4) {
+    const paddedResult =
+      header.commandId === CMD_SET_PAYLOAD &&
+      data.length === PADDED_RESULT_BYTES &&
+      data.subarray(4).every((b) => b === 0);
+    if (!isMedia && !frame.json && (data.length === 4 || paddedResult)) {
       this.emit("commandResult", { code: data.readInt32LE(0), channel: header.channel });
     }
     this.emit("data", frame);
