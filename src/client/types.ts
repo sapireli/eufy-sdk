@@ -12,7 +12,6 @@ import type { DeviceEventMap } from "../model/capabilities/index.js";
 import type { Capability } from "../model/index.js";
 import type { P2PFrame } from "../transport/p2p/p2p-session.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
-import type { PowerOverride } from "../core/contracts.js";
 import type { BizMapFrame } from "../transport/mqtt/biz-stream.js";
 import type { VacuumMapSnapshot } from "../model/index.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
@@ -55,6 +54,9 @@ export interface WaitForRealtimeOptions {
    */
   timeoutMs?: number;
 }
+
+/** Local operating-power claim; `auto` uses the SDK's evidence-based tier. */
+export type PowerOverride = "auto" | "always-on" | "battery";
 
 export interface EufyMegaOptions extends MegaClientConfig {
   /** Persist FCM push credentials + seen ids across runs (default: in-memory). */
@@ -116,8 +118,8 @@ export interface EufyMegaOptions extends MegaClientConfig {
   p2pIdleMs?: number;
   /**
    * Initial local operating-power claims by device serial. `always-on` keeps P2P sessions persistent
-   * and live media unbounded; `battery` enforces both battery limits. A bound
-   * `device.battery()?.setPowerOverride()` can change or clear a claim at runtime. These values are
+   * and live media unbounded; `battery` enforces both battery limits. `EufyMega.setPowerOverride()`
+   * can change or clear a claim at runtime. These values are
    * SDK policy, never commands sent to a device, and are not stored in the login session.
    */
   powerOverrides?: Record<string, Exclude<PowerOverride, "auto">>;

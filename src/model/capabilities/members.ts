@@ -21,7 +21,6 @@ import {
   type CommandSink,
   type Ff09SettingsReader,
   type MediaProvider,
-  type PowerOverrideController,
   type RawDpCodec,
 } from "../../core/contracts.js";
 import { describedAction, readBool, readNum, readStr } from "./access.js";
@@ -298,8 +297,6 @@ export interface MemberDeps {
   ctx: CommandContext;
   sink: CommandSink;
   read: CapabilityStateReader;
-  /** Local operating-power policy for a bound device; absent on a standalone model. */
-  powerOverride?: PowerOverrideController;
   rawDp?: RawDpCodec;
   /**
    * The media provider, when the device is bound to one.

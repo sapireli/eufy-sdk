@@ -57,8 +57,6 @@ import {
   type CommandSink,
   type Ff09SettingsReader,
   type MediaProvider,
-  type PowerOverride,
-  type PowerOverrideController,
   type TuyaDpInbound,
 } from "../core/contracts.js";
 import { noopLogger } from "../core/logger.js";
@@ -88,6 +86,7 @@ import type {
   RealtimePlaneReadiness,
   RealtimeReadiness,
   WaitForRealtimeOptions,
+  PowerOverride,
 } from "./types.js";
 
 export type {
@@ -99,6 +98,7 @@ export type {
   RealtimePlaneReadiness,
   RealtimeReadiness,
   WaitForRealtimeOptions,
+  PowerOverride,
 } from "./types.js";
 
 type SemanticEventRefresh = Pick<CommandObservation, "param" | "property" | "resetStandaloneSession" | "timeoutMs"> & {
@@ -632,7 +632,6 @@ export class EufyMega extends EventEmitter {
         this.mediaProviderFor(sn),
         this.ff09SettingsReaderFor(sn, ctx),
         rawDpCodec,
-        this.powerOverrideFor(sn),
       );
       this.boundParamIds.set(sn, new Set([...(this.boundParamIds.get(sn) ?? []), ...ctx.paramIds]));
       this.emit("deviceState", this.deviceState(sn));
@@ -1268,7 +1267,6 @@ export class EufyMega extends EventEmitter {
       this.mediaProviderFor(sn),
       this.ff09SettingsReaderFor(sn, ctx),
       rawDpCodec,
-      this.powerOverrideFor(sn),
     );
     this.boundParamIds.set(sn, ctx.paramIds);
     if (this.opts.autoRealtime !== false) {
@@ -1615,7 +1613,6 @@ export class EufyMega extends EventEmitter {
         this.mediaProviderFor(sn),
         this.ff09SettingsReaderFor(sn, ctx),
         rawDpCodec,
-        this.powerOverrideFor(sn),
       );
       this.boundParamIds.set(sn, ctx.paramIds);
       this.emit("deviceCapabilities", { deviceSn: sn, gained, capabilities: [...dev.capabilities] });
@@ -1673,30 +1670,33 @@ export class EufyMega extends EventEmitter {
     return readiness;
   }
 
-  /** Read or replace one device's local operating-power claim. */
-  private powerOverrideFor(sn: string): PowerOverrideController {
-    return {
-      getOverride: () => this.powerOverrides.get(sn) ?? "auto",
-      setOverride: (override) => {
-        if (override !== "auto" && override !== "always-on" && override !== "battery")
-          throw new TypeError("power override must be auto, always-on, or battery");
-        if ((this.powerOverrides.get(sn) ?? "auto") === override) return;
-        if (override === "auto") this.powerOverrides.delete(sn);
-        else this.powerOverrides.set(sn, override);
-        const after = this.devicePower(sn);
-        this.p2p.updatePowerTier(sn, after);
-        const device = this.registry.list().find((entry) => entry.sn === sn);
-        if (
-          after === "wired" &&
-          this.opts.autoRealtime !== false &&
-          this.mega.loggedIn &&
-          device &&
-          P2PCommandRouter.claimsDevice(device) &&
-          this.p2p.stationKeyOf(sn) === sn
-        )
-          void this.p2p.ensureStation(sn).catch((error) => this.reportError(error));
-      },
-    };
+  /** Return a device's local operating-power claim, or `auto` when none is set. */
+  getPowerOverride(sn: string): PowerOverride {
+    return this.powerOverrides.get(sn) ?? "auto";
+  }
+
+  /**
+   * Replace a local operating-power claim without writing to the device. The effective tier updates
+   * an open shared stream and the standalone station's P2P idle policy immediately.
+   */
+  setPowerOverride(sn: string, override: PowerOverride): void {
+    if (override !== "auto" && override !== "always-on" && override !== "battery")
+      throw new TypeError("power override must be auto, always-on, or battery");
+    if (this.getPowerOverride(sn) === override) return;
+    if (override === "auto") this.powerOverrides.delete(sn);
+    else this.powerOverrides.set(sn, override);
+    const after = this.devicePower(sn);
+    this.p2p.updatePowerTier(sn, after);
+    const device = this.registry.list().find((entry) => entry.sn === sn);
+    if (
+      after === "wired" &&
+      this.opts.autoRealtime !== false &&
+      this.mega.loggedIn &&
+      device &&
+      P2PCommandRouter.claimsDevice(device) &&
+      this.p2p.stationKeyOf(sn) === sn
+    )
+      void this.p2p.ensureStation(sn).catch((error) => this.reportError(error));
   }
 
   /** Operating tier of one device, with an explicit local claim taking precedence over model facts. */

@@ -62,17 +62,16 @@ Battery drain has two windows, one per state — the same power model, enforced 
 
 ### Local operating-power override
 
-Every bound device with the `battery()` capability can carry a local operating-power claim. It changes
-the SDK's session and live-stream policy; it sends no command to the device and does not alter battery
-level or charging readings.
+A client can carry a local operating-power claim for a device. It changes the SDK's session and
+live-stream policy; it sends no command to the device and does not alter battery level or charging
+readings. This is an installation decision, separate from the device's reported capabilities.
 
 ```ts
 const deviceSn = "T8000P0000000000"; // synthetic example
-const dev = await eufy.getDevice(deviceSn);
-dev.battery?.()?.setPowerOverride?.("always-on"); // persistent standalone P2P, unbounded live stream
-dev.battery?.()?.powerOverride?.(); // "always-on"
-dev.battery?.()?.setPowerOverride?.("battery"); // restore battery limits immediately
-dev.battery?.()?.setPowerOverride?.("auto"); // clear the local claim
+eufy.setPowerOverride(deviceSn, "always-on"); // persistent standalone P2P, unbounded live stream
+eufy.getPowerOverride(deviceSn); // "always-on"
+eufy.setPowerOverride(deviceSn, "battery"); // restore battery limits immediately
+eufy.setPowerOverride(deviceSn, "auto"); // clear the local claim
 ```
 
 `auto` budgets a device with a physical battery even if it reports charging. Charging proves input is
@@ -81,9 +80,8 @@ explicit choice for a device whose installation can support a persistent session
 the claim updates an open shared stream and an idle standalone station session immediately. An attached
 camera's claim affects its stream; its HomeBase owns the station session.
 
-A confirmed mains-only model can still expose `battery()` for power settings because its record reports
-battery-family parameters. Its physical-cell readings are withheld, and its default is already wired,
-so it does not expose `setPowerOverride()` as a bound action.
+`live({ powered: "wired" })` sets one new media source's budget. A local claim also updates an already
+open source, applies to later acquisitions, and governs a standalone station's idle P2P session.
 
 To restore claims when constructing a new client, pass `powerOverrides: { [deviceSn]: "always-on" }`.
 Runtime changes are held in the client instance and are not saved in the login session.

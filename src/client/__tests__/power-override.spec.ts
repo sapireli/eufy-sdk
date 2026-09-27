@@ -21,7 +21,7 @@ function doorbell(): EufyDevice {
 }
 
 describe("local operating-power override", () => {
-  it("is available on a bound battery device and changes the next media call", async () => {
+  it("applies a local claim to the next media call without a capability action", async () => {
     const eufy = new EufyMega({
       email: "synthetic@example.com",
       password: "synthetic",
@@ -55,16 +55,15 @@ describe("local operating-power override", () => {
     } satisfies Partial<MediaProvider>);
     const update = vi.spyOn((eufy as any).p2p, "updatePowerTier").mockImplementation(() => {});
     const device = await eufy.getDevice(DOORBELL);
-    const battery = device.battery?.();
-    expect(battery?.powerOverride?.()).toBe("auto");
+    expect(eufy.getPowerOverride(DOORBELL)).toBe("auto");
     await device.camera?.()?.snapshotLive?.();
-    battery?.setPowerOverride?.("always-on");
-    expect(battery?.powerOverride?.()).toBe("always-on");
+    eufy.setPowerOverride(DOORBELL, "always-on");
+    expect(eufy.getPowerOverride(DOORBELL)).toBe("always-on");
     await device.camera?.()?.snapshotLive?.();
-    battery?.setPowerOverride?.("battery");
+    eufy.setPowerOverride(DOORBELL, "battery");
     await device.camera?.()?.snapshotLive?.();
-    battery?.setPowerOverride?.("auto");
-    expect(battery?.powerOverride?.()).toBe("auto");
+    eufy.setPowerOverride(DOORBELL, "auto");
+    expect(eufy.getPowerOverride(DOORBELL)).toBe("auto");
     expect(seen).toEqual(["battery", "wired", "battery"]);
     expect(update).toHaveBeenCalledWith(DOORBELL, "wired");
     expect(update).toHaveBeenCalledWith(DOORBELL, "battery");
