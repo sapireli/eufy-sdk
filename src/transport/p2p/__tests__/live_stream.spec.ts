@@ -1,5 +1,5 @@
 import { LiveStream, DEFAULT_KEEPALIVE_MS } from "../live-stream.js";
-import { STATION_CHANNEL, type P2PSession } from "../p2p-session.js";
+import { P2PSession, STATION_CHANNEL } from "../p2p-session.js";
 import { FakeP2PSession, START_CODE, p2pAudioFrame, p2pVideoFrame } from "./live-source-fixtures.js";
 
 describe("LiveStream", () => {
@@ -15,6 +15,84 @@ describe("LiveStream", () => {
     expect(session.started).toBe(1);
     live.stop();
     expect(session.stopped).toBe(1);
+  });
+
+  it("ends an active stream when its P2P peer stops answering", () => {
+    const { session, live } = mk();
+    const stopped = vi.fn();
+    live.on("stop", stopped);
+    live.start();
+    session.emit("pathStale");
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(session.stopped).toBe(1);
+    session.emit("pathStale");
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(session.listenerCount("pathStale")).toBe(0);
+  });
+
+  it("keeps delivering media through a reply gap and stops when both signals are silent", () => {
+    vi.useFakeTimers();
+    try {
+      const { session, live } = mk({ keepAliveMs: 0 });
+      const stopped = vi.fn();
+      const video = vi.fn();
+      live.on("stop", stopped);
+      live.on("video", video);
+      live.start();
+
+      session.push(p2pVideoFrame({ keyframe: true, nal: Buffer.from([0x67, 1, 2, 3]) }));
+      expect(video).toHaveBeenCalledOnce();
+      session.emit("pathStale");
+      expect(stopped).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(10_000);
+      session.push(p2pVideoFrame({ keyframe: false, nal: Buffer.from([0x41, 9]) }));
+      expect(video).toHaveBeenCalledTimes(2);
+
+      vi.advanceTimersByTime(14_999);
+      session.emit("pathStale");
+      expect(stopped).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(1);
+      session.emit("pathStale");
+      expect(stopped).toHaveBeenCalledOnce();
+      expect(session.listenerCount("pathStale")).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not treat a sibling camera's media as proof that this stream is active", () => {
+    const { session, live } = mk({ channel: 1, homeBaseAttached: true, keepAliveMs: 0 });
+    const video = vi.fn();
+    live.on("video", video);
+    live.start();
+    session.push(p2pVideoFrame({ keyframe: true, channel: 2, nal: Buffer.from([0x67, 1, 2, 3]) }));
+    session.emit("pathStale");
+    expect(video).not.toHaveBeenCalled();
+    expect(session.stopped).toBe(1);
+  });
+
+  it("emits the stale event on a heartbeat only after the session reports a dead path", () => {
+    const session = new P2PSession({ stationSn: "T8000P0000000000", p2pDid: "XXXXXXX-000000-XXXXX" });
+    const internals = session as unknown as {
+      connectAddress?: { host: string; port: number };
+      heartbeat: () => void;
+      send: ReturnType<typeof vi.fn>;
+    };
+    internals.connectAddress = { host: "203.0.113.1", port: 32100 };
+    internals.send = vi.fn();
+    const answering = vi.spyOn(session, "pathAnswering", "get");
+    const stale = vi.fn();
+    session.on("pathStale", stale);
+
+    answering.mockReturnValue(true);
+    internals.heartbeat();
+    expect(stale).not.toHaveBeenCalled();
+
+    answering.mockReturnValue(false);
+    internals.heartbeat();
+    expect(stale).toHaveBeenCalledOnce();
   });
 
   it("emits Annex-B video with the 22-byte header stripped + keyframe flag + resolution", () => {

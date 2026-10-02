@@ -12,6 +12,7 @@ import type { DeviceEventMap } from "../model/capabilities/index.js";
 import type { Capability } from "../model/index.js";
 import type { P2PFrame } from "../transport/p2p/p2p-session.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
+import type { PowerOverride } from "../core/contracts.js";
 import type { BizMapFrame } from "../transport/mqtt/biz-stream.js";
 import type { VacuumMapSnapshot } from "../model/index.js";
 import type { PushEvent, RawPushMessage } from "../transport/push/types.js";
@@ -67,6 +68,12 @@ export interface EufyMegaOptions extends MegaClientConfig {
    */
   localAddresses?: Record<string, string>;
   /**
+   * Decide whether a station's P2P session may select a peer address. Returning `false` rejects that
+   * candidate before the handshake or connection; absence accepts all peers. Cloud lookup brokers remain
+   * reachable regardless of this decision. The decision applies to each control and media session.
+   */
+  acceptP2PPeer?: (stationSn: string, peer: { readonly host: string; readonly port: number }) => boolean;
+  /**
    * Suppress the `255.255.255.255` local-lookup broadcast (default `false` — broadcast is sent).
    *
    * An unconnected P2P session broadcasts a local lookup **once a second for the whole connect
@@ -113,6 +120,13 @@ export interface EufyMegaOptions extends MegaClientConfig {
    * can sleep (default 300000 = 5 min). Wired stations stay persistent.
    */
   p2pIdleMs?: number;
+  /**
+   * Initial local operating-power claims by device serial. `always-on` keeps P2P sessions persistent
+   * and live media unbounded; `battery` enforces both battery limits. A bound
+   * `device.battery()?.setPowerOverride()` can change or clear a claim at runtime. These values are
+   * SDK policy, never commands sent to a device, and are not stored in the login session.
+   */
+  powerOverrides?: Record<string, Exclude<PowerOverride, "auto">>;
   /**
    * How long a speculative pre-warm holds the session it opened, in ms (default 28000). Applies only to
    * the events {@link EufyMegaOptions.prewarmEvents} opts into; pre-warm is off until then.
