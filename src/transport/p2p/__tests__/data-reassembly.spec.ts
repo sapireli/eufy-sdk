@@ -259,7 +259,7 @@ describe("P2P data reassembly", () => {
   it("resynchronizes onto numbering the device restarts mid-connection", () => {
     vi.useFakeTimers();
     try {
-      const { feed, received, debug } = harness();
+      const { feed, received, debug, videoGaps } = harness();
       const payload = Buffer.alloc(48, 7);
       const restarted = commandFrame(0, 1300, payload);
 
@@ -272,6 +272,7 @@ describe("P2P data reassembly", () => {
 
       expect(received.map(({ commandId }) => commandId)).toEqual([1300, 1301]);
       expect(received[0]!.raw).toEqual(payload);
+      expect(videoGaps).toHaveLength(1);
       expect(vi.getTimerCount()).toBe(0);
       expect(debug).toHaveBeenCalledWith(
         LIVE_TRACE_MESSAGE,

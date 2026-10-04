@@ -429,6 +429,7 @@ export class LiveStream extends EventEmitter {
    * otherwise silent in both directions: no frame reaches a consumer, and nothing states why.
    */
   private reportDroppedUnit(drop: { carried: number; chunks: number; count: number }): void {
+    this.awaitingKeyframeAfterGap = true;
     const message = `[live] dropped an incomplete access unit (${drop.carried} bytes in ${drop.chunks} frame(s), tail never arrived, ${drop.count} so far)`;
     if (drop.count === 1) this.logger.warn(message);
     else this.logger.debug(message);

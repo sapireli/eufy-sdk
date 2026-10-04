@@ -1965,6 +1965,7 @@ export class P2PSession extends EventEmitter {
       this.clearReorderTimer(dataType);
       this.reorderByType.delete(dataType);
       this.pendingByDataType.delete(dataType);
+      if (dataType === P2PDataType.VIDEO) this.emit("videoGap");
       this.lastSeqByType.set(dataType, seqNo);
       this.reassemble(dataType, msg.subarray(8));
       return;
@@ -1997,10 +1998,13 @@ export class P2PSession extends EventEmitter {
   private armReorderTimer(dataType: number): void {
     const reorder = this.reorderByType.get(dataType);
     if (!reorder?.held.size || reorder.timer) return;
-    const timer = setTimeout(() => {
-      reorder.timer = undefined;
-      this.abandonHole(dataType);
-    }, dataType === P2PDataType.VIDEO ? VIDEO_REORDER_WAIT_MS : REORDER_WAIT_MS);
+    const timer = setTimeout(
+      () => {
+        reorder.timer = undefined;
+        this.abandonHole(dataType);
+      },
+      dataType === P2PDataType.VIDEO ? VIDEO_REORDER_WAIT_MS : REORDER_WAIT_MS,
+    );
     timer.unref?.();
     reorder.timer = timer;
   }

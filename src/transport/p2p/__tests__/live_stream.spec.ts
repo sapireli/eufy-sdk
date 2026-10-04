@@ -368,6 +368,8 @@ describe("LiveStream access-unit reassembly", () => {
     session.push(videoChunk(filled, { timestamp: 0x1000 }));
     session.push(videoChunk(small, { timestamp: 0x1000, keyframe: false }));
 
+    expect(frames).toHaveLength(0);
+    session.push(videoChunk(small, { timestamp: 0x2000, keyframe: true }));
     expect(frames).toHaveLength(1);
     expect(frames[0].data.equals(small)).toBe(true);
   });
@@ -388,12 +390,14 @@ describe("LiveStream access-unit reassembly", () => {
    * arrives is ended by the next unit while still full. Handing those bytes to a decoder is what produces
    * `error while decoding MB …, bytestream -28` — it ran off the end of a slice whose header promised more.
    */
-  it("drops a unit whose tail never arrived rather than delivering truncated bytes", () => {
+  it("drops a unit whose tail never arrived and waits for a keyframe", () => {
     const { session, frames } = mk();
 
     session.push(videoChunk(filled, { timestamp: 0x1000 }));
     session.push(videoChunk(small, { timestamp: 0x2000, keyframe: false }));
 
+    expect(frames).toHaveLength(0);
+    session.push(videoChunk(small, { timestamp: 0x3000, keyframe: true }));
     expect(frames).toHaveLength(1);
     expect(frames[0].data.equals(small)).toBe(true);
   });
