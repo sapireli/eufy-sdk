@@ -211,7 +211,7 @@ const STALE_RETRANSMIT_DEPTH = 1024;
 /** Additional UDP source ports registered alongside the session's own during cloud lookup. */
 const PUNCH_PROBE_SOCKETS = 7;
 /** Chosen maximum wait for a missing datagram; 250 ms is not a measured device resend delay. */
-const REORDER_WAIT_MS = 250;
+const REORDER_WAIT_MS = 700;
 /** Maximum later datagrams held behind a hole, bounding retained memory and the delay before resuming. */
 const REORDER_MAX_DATAGRAMS = 128;
 /**
@@ -2030,6 +2030,9 @@ export class P2PSession extends EventEmitter {
     if (this.pendingByDataType.has(dataType) && this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS)
       this.trace({ phase: "datagram-gap", dataType });
     this.pendingByDataType.delete(dataType);
+    // A missing datagram may have held an entire reference picture, even if no partial frame was open.
+    // Downstream decoders must wait for the next IDR instead of decoding dependent pictures as gray.
+    if (dataType === P2PDataType.VIDEO) this.emit("videoGap");
     const last = this.lastSeqByType.get(dataType)!;
     const earliest = [...held.keys()].sort((a, b) => ((a - last) & 0xffff) - ((b - last) & 0xffff))[0];
     this.lastSeqByType.set(dataType, (earliest - 1) & 0xffff);

@@ -17,6 +17,22 @@ describe("LiveStream", () => {
     expect(session.stopped).toBe(1);
   });
 
+  it("holds dependent video after transport loss until a fresh keyframe", () => {
+    const { session, live } = mk({ keepAliveMs: 0 });
+    const video = vi.fn();
+    live.on("video", video);
+    live.start();
+    session.push(p2pVideoFrame({ keyframe: true, nal: Buffer.from([0x67, 1, 2, 3]) }));
+    session.emit("videoGap");
+    session.push(p2pVideoFrame({ keyframe: false, nal: Buffer.from([0x41, 9]) }));
+    expect(video).toHaveBeenCalledTimes(1);
+    session.push(p2pVideoFrame({ keyframe: true, nal: Buffer.from([0x67, 4, 5, 6]) }));
+    expect(video).toHaveBeenCalledTimes(2);
+    session.push(p2pVideoFrame({ keyframe: false, nal: Buffer.from([0x41, 10]) }));
+    expect(video).toHaveBeenCalledTimes(3);
+    live.stop();
+  });
+
   it("ends an active stream when its P2P peer stops answering", () => {
     const { session, live } = mk();
     const stopped = vi.fn();

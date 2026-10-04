@@ -237,6 +237,11 @@ export class AccessUnitAssembler {
    */
   constructor(private readonly onDropped?: (drop: { carried: number; chunks: number; count: number }) => void) {}
 
+  /** Discard an open unit after transport loss; no continuation can complete it. */
+  reset(): void {
+    this.discard();
+  }
+
   /**
    * Feed one raw `CMD_VIDEO_FRAME` payload; returns the access units it completed — none while a unit is
    * still being filled, one in the ordinary case.

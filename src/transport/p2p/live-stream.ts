@@ -133,6 +133,12 @@ export class LiveStream extends EventEmitter {
   private lastCodec: VideoCodec = "h264";
   /** Rebuilds an access unit the station split across several frames — see {@link AccessUnitAssembler}. */
   private readonly units = new AccessUnitAssembler((drop) => this.reportDroppedUnit(drop));
+  private awaitingKeyframeAfterGap = false;
+  private readonly videoGapHandler = () => {
+    this.units.reset();
+    this.awaitingKeyframeAfterGap = true;
+    this.logger.warn(`[live ch${this.channel}] lost video datagram after retransmit wait; waiting for a keyframe`);
+  };
   /** The channel inbound media must be tagged with, once {@link acceptsMedia} trusts the station's tag. */
   private mediaChannel?: number;
   private tracedFirstVideoCommand = false;
@@ -183,6 +189,7 @@ export class LiveStream extends EventEmitter {
     this.listening = true;
     this.lastDeliveredMediaAt = undefined;
     this.session.on("data", this.handler);
+    this.session.on("videoGap", this.videoGapHandler);
     this.session.on("liveStartUnacknowledged", this.unackedHandler);
     this.session.on("pathStale", this.pathStaleHandler);
     this.sendStart();
@@ -282,6 +289,8 @@ export class LiveStream extends EventEmitter {
     if (!this.listening) return;
     this.listening = false;
     this.session.off("data", this.handler);
+    this.session.off("videoGap", this.videoGapHandler);
+    this.awaitingKeyframeAfterGap = false;
     this.session.off("liveStartUnacknowledged", this.unackedHandler);
     this.session.off("pathStale", this.pathStaleHandler);
     if (this.kaTimer) clearInterval(this.kaTimer);
@@ -318,6 +327,10 @@ export class LiveStream extends EventEmitter {
     try {
       if (f.commandId === CMD_VIDEO_FRAME) {
         for (const unit of this.units.push(f.data, (payload) => this.annexbOf(payload, f.signCode))) {
+          if (this.awaitingKeyframeAfterGap) {
+            if (!unit.keyframe) continue;
+            this.awaitingKeyframeAfterGap = false;
+          }
           if (!this.tracedFirstVideoUnit) {
             this.tracedFirstVideoUnit = true;
             this.trace({ phase: "first-video-unit", keyframe: unit.keyframe });
