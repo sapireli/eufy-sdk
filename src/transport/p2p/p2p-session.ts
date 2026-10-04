@@ -211,7 +211,8 @@ const STALE_RETRANSMIT_DEPTH = 1024;
 /** Additional UDP source ports registered alongside the session's own during cloud lookup. */
 const PUNCH_PROBE_SOCKETS = 7;
 /** Chosen maximum wait for a missing datagram; 250 ms is not a measured device resend delay. */
-const REORDER_WAIT_MS = 700;
+const REORDER_WAIT_MS = 250;
+const VIDEO_REORDER_WAIT_MS = 700;
 /** Maximum later datagrams held behind a hole, bounding retained memory and the delay before resuming. */
 const REORDER_MAX_DATAGRAMS = 128;
 /**
@@ -1945,7 +1946,7 @@ export class P2PSession extends EventEmitter {
    * if the missing one arrives. A logical frame's payload spans datagrams that carry no header of their
    * own, so reassembling around a hole is impossible; waiting for it is what keeps the frame whole.
    *
-   * Only once {@link REORDER_WAIT_MS} passes, or {@link REORDER_MAX_DATAGRAMS} pile up, is the datagram
+   * Only once the data type's reorder wait passes, or {@link REORDER_MAX_DATAGRAMS} pile up, is the datagram
    * treated as lost: a pending frame is discarded and delivery resumes from the earliest held datagram.
    */
   private onData(msg: Buffer, addr: Address): void {
@@ -1999,7 +2000,7 @@ export class P2PSession extends EventEmitter {
     const timer = setTimeout(() => {
       reorder.timer = undefined;
       this.abandonHole(dataType);
-    }, REORDER_WAIT_MS);
+    }, dataType === P2PDataType.VIDEO ? VIDEO_REORDER_WAIT_MS : REORDER_WAIT_MS);
     timer.unref?.();
     reorder.timer = timer;
   }
