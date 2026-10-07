@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { P2PSession } from "../p2p-session.js";
 import { LIVE_TRACE_MESSAGE } from "../live-trace.js";
+import { parseDataFrameHeader } from "../codec.js";
 
 /**
  * A HomeBase-attached camera's media start has no level-1 wire.
@@ -31,12 +32,25 @@ function attachedSession(withKey: boolean) {
     connectAddress?: { address: string; port: number };
     level2Key?: Buffer;
     send: (...args: unknown[]) => void;
+    decryptLevel2: (payload: Buffer, signCode: number) => Buffer | undefined;
   };
   internals.connectAddress = { address: "203.0.113.1", port: 32100 };
   if (withKey) internals.level2Key = Buffer.alloc(32, 7);
   const sent: unknown[][] = [];
   internals.send = (...args: unknown[]) => sent.push(args);
-  return { session: built, sent, debug };
+  return {
+    session: built,
+    sent,
+    debug,
+    decodedFrame: (index: number) => {
+      const data = sent[index]![2] as Buffer;
+      const header = parseDataFrameHeader(data.subarray(4));
+      const body = data.subarray(20, 20 + header.bytesToRead);
+      const plain = internals.decryptLevel2(body, header.signCode);
+      if (!plain) throw new Error("captured media command did not decrypt");
+      return { header, value: JSON.parse(plain.toString("utf8")) };
+    },
+  };
 }
 
 const traces = (debug: ReturnType<typeof vi.fn>) =>
@@ -68,5 +82,20 @@ describe("an attached media start with no level-2 key", () => {
 
     expect(sent).toHaveLength(1);
     expect(traces(debug).map((t) => (t as { phase: string }).phase)).not.toContain("media-command-unsent");
+  });
+
+  it("requests the app's live stream type without adding start fields to the stop", () => {
+    const { session, decodedFrame } = attachedSession(true);
+    const accountId = "0".repeat(40);
+
+    session.startLiveMedia(2, accountId, true);
+    const start = decodedFrame(0);
+    expect(start.header).toMatchObject({ commandId: 1350, channel: 2, signCode: 8 });
+    expect(start.value).toMatchObject({ cmd: 1003, payload: { streamtype: 2 } });
+
+    session.stopLiveMedia(2, accountId);
+    const stop = decodedFrame(1);
+    expect(stop.header).toMatchObject({ commandId: 1350, channel: 2, signCode: 8 });
+    expect(stop.value).toEqual({ account_id: accountId, cmd: 1004, mChannel: 2, mValue3: 1004, payload: {} });
   });
 });
