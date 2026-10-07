@@ -1103,12 +1103,16 @@ export class P2PSession extends EventEmitter {
    * `opts.force` sends a real start on a channel this session already counts as started, and yields to a
    * start still awaiting acknowledgement — that one is already being repeated byte-identically and is
    * abandoned at its own deadline.
+   *
+   * `opts.streamType` selects the start's `streamtype` field; absent means 1 for attached cameras and 2
+   * for own-session cameras. On an attached T8214, changing only this field from 2 to 1 made motion
+   * switch the encoded split view to picture-in-picture; 2 retained the split view through motion.
    */
   startLiveMedia(
     channel: number = STATION_CHANNEL,
     accountId = "",
     homeBaseAttached = false,
-    opts?: { force?: boolean },
+    opts?: { force?: boolean; streamType?: 1 | 2 },
   ): void {
     if (homeBaseAttached) {
       this.tracedDatagramGaps = 0;
@@ -1118,7 +1122,12 @@ export class P2PSession extends EventEmitter {
         action: "start",
         level2: !!this.level2Key,
       });
-      this.sendMediaPayloadLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, {});
+      this.sendMediaPayloadLevel2(
+        CMD_START_REALTIME_MEDIA,
+        channel,
+        accountId,
+        opts?.streamType === undefined ? {} : { streamtype: opts.streamType },
+      );
       return;
     }
     const want: "l1" | "l2" = this.level2Key ? "l2" : "l1";
@@ -1137,7 +1146,7 @@ export class P2PSession extends EventEmitter {
     } else {
       this.trace({ phase: "media-command", topology: "own", action: "start", level2: want === "l2" });
       this.tracedDatagramGaps = 0;
-      this.sendStartLiveOwnSession(channel, accountId);
+      this.sendStartLiveOwnSession(channel, accountId, opts?.streamType);
       this.liveStartedChannels.set(channel, want);
     }
   }
@@ -1145,13 +1154,13 @@ export class P2PSession extends EventEmitter {
   /**
    * The own-session START_LIVE wrapper JSON (`{commandType: 1000, data: {…}}`).
    *
-   * Every field is byte-verified against the current app's own start for an own-session camera, decrypted
-   * from a level-2 capture: `msg_id` is 1, `extValue` repeats the inner command id 1000, `streamtype` is 2,
+   * The defaults are byte-verified against the current app's own start for an own-session camera, decrypted
+   * from a level-2 capture: `msg_id` is 1, `extValue` repeats the inner command id 1000, `streamtype` defaults to 2,
    * `video_type` is 12, and `transaction` is the millisecond timestamp as a string. The device answers a
    * start carrying these values with a keyframe; `encryptkey` is the modulus it RSA-wraps each keyframe's
    * AES media key with (unwrapped by {@link decodeVideoFrame}).
    */
-  private startLiveJson(channel: number, accountId: string): Buffer {
+  private startLiveJson(channel: number, accountId: string, streamType: 1 | 2 = 2): Buffer {
     const now = Date.now();
     return Buffer.from(
       JSON.stringify({
@@ -1170,7 +1179,7 @@ export class P2PSession extends EventEmitter {
           extValue: CMD_START_LIVE,
           ivalue: 1,
           restore: 0,
-          streamtype: 2,
+          streamtype: streamType,
           video_type: 12,
           timestamp: now,
           transaction: String(now),
@@ -1187,9 +1196,9 @@ export class P2PSession extends EventEmitter {
    * signCode 1, frame type 11) — chosen by the session key, not the device family. The camera RSA-wraps
    * each keyframe's AES media key with the `encryptkey` modulus (unwrapped by {@link decodeVideoFrame}).
    */
-  private sendStartLiveOwnSession(channel: number, accountId: string): void {
+  private sendStartLiveOwnSession(channel: number, accountId: string, streamType?: 1 | 2): void {
     if (!this.connectAddress) return;
-    const plain = this.startLiveJson(channel, accountId);
+    const plain = this.startLiveJson(channel, accountId, streamType);
     let payload: Buffer;
     let signCode: number;
     let magic: [number, number];
@@ -1589,7 +1598,7 @@ export class P2PSession extends EventEmitter {
           camera_type: 0,
           entrytype: 0,
           key: this.rsaModulus(),
-          streamtype: 2,
+          streamtype: 1,
           ...payload,
         }
       : payload;

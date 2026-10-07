@@ -165,6 +165,7 @@ export interface SharedLiveOpts extends SharedSourceHints, AbortableCall {
  * report members that were never a shared-source concern as "ignored".
  */
 const SHARED_LIVE_OPT_KEYS = [
+  "streamType",
   "eccPrivateKey",
   "keepAliveMs",
   "lingerMs",
@@ -1002,6 +1003,7 @@ export class P2PCommandRouter {
             channel,
             accountId,
             homeBaseAttached,
+            streamType: sourceOpts.streamType,
             eccPrivateKey: sourceOpts.eccPrivateKey,
             keepAliveMs: sourceOpts.keepAliveMs,
             reassertWanted: ctx.reassertWanted,
