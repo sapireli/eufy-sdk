@@ -973,6 +973,9 @@ export class P2PCommandRouter {
       requireLevel2ForAttached: true,
       signal: opts.signal,
     });
+    if (!homeBaseAttached && opts.streamType === 1) {
+      throw new RangeError("streamType 1 is unverified for own-session cameras");
+    }
     const key = `${parentSn}:${channel}`;
     let source = this.liveSources.get(key);
     if (source && source.state === "stopped") {

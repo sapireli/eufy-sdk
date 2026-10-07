@@ -119,7 +119,6 @@ describe("the managed live stream type", () => {
   it.each([
     [true, 2],
     [false, 2],
-    [false, 1],
   ] as const)(
     "keeps the public first opener's selection through retries (attached=%s, type=%s)",
     async (attached, streamType) => {
@@ -148,7 +147,7 @@ describe("the managed live stream type", () => {
       try {
         const media = router.mediaProviderFor(STATION_SN);
         const first = await media.live({ streamType, lingerMs: 0 });
-        const joined = await media.live({ streamType: streamType === 2 ? 1 : 2 });
+        const joined = await media.live({ streamType: attached ? (streamType === 2 ? 1 : 2) : 2 });
         if (!attached) acknowledge(0);
         vi.advanceTimersByTime(6000);
 
@@ -160,7 +159,7 @@ describe("the managed live stream type", () => {
           .filter((value) => value.cmd === 1003 || value.commandType === 1000);
         expect(starts.length).toBeGreaterThan(1);
         for (const value of starts) expect((value.payload ?? value.data).streamtype).toBe(streamType);
-        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("streamType"));
+        if (attached) expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("streamType"));
 
         joined.stop();
         first.stop();
@@ -170,6 +169,30 @@ describe("the managed live stream type", () => {
       }
     },
   );
+
+  it("rejects an unverified own-session selection before opening a source", async () => {
+    const { session, sent } = attachedSession(true);
+    const router = new P2PCommandRouter({
+      mega: {} as never,
+      listDevices: () => [],
+      ensureDevices: async () => {},
+      onConnect: () => {},
+      onClose: () => {},
+      onError: () => {},
+      onLevel2Ready: () => {},
+      onFrame: () => {},
+    });
+    (router as unknown as { resolveSession: unknown }).resolveSession = async () => ({
+      session,
+      parentSn: STATION_SN,
+      channel: 2,
+      accountId: "0".repeat(40),
+      homeBaseAttached: false,
+    });
+
+    await expect(router.mediaProviderFor(STATION_SN).live({ streamType: 1 })).rejects.toThrow(RangeError);
+    expect(sent).toHaveLength(0);
+  });
 
   it("retains the selected type when an attached stream reasserts after silence", () => {
     vi.useFakeTimers();

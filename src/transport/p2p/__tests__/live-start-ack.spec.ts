@@ -81,21 +81,11 @@ describe("live start acknowledgement diagnostics", () => {
     expect(value.data).toMatchObject({ cmd: 1000, msg_id: 1, extValue: 1000, streamtype: 2, video_type: 12 });
   });
 
-  it("selects the own-session stream type for level-1 starts, retransmissions and forced restarts", () => {
-    vi.useFakeTimers();
-    const { session, send, decodedFrame, acknowledge } = harness();
+  it("rejects the unverified own-session stream type without sending a start", () => {
+    const { session, send } = harness();
 
-    session.startLiveMedia(0, ADMIN_ACCOUNT_ID, false, { streamType: 1 });
-    vi.advanceTimersByTime(500);
-    expect(send.mock.calls.length).toBeGreaterThan(1);
-    for (let index = 0; index < send.mock.calls.length; index++) {
-      expect(decodedFrame(index).data).toMatchObject({ streamtype: 1 });
-    }
-    acknowledge(0);
-    const beforeForce = send.mock.calls.length;
-    session.startLiveMedia(0, ADMIN_ACCOUNT_ID, false, { streamType: 1, force: true });
-    expect(decodedFrame(beforeForce).data).toMatchObject({ streamtype: 1 });
-    acknowledge(1);
+    expect(() => session.startLiveMedia(0, ADMIN_ACCOUNT_ID, false, { streamType: 1 })).toThrow(RangeError);
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("repeats an unacknowledged live start byte-identically", () => {

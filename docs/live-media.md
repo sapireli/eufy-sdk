@@ -34,6 +34,7 @@ Consequences a host should rely on:
 1 for HomeBase-attached cameras and 2 for cameras with their own session. The first opener fixes
 the choice for the shared pull; later consumers join it, and conflicting hints are logged and ignored.
 Retries and session recovery retain the choice.
+For a camera with its own session, 2 is the only verified value; requesting 1 rejects the live call.
 
 ```ts
 const stream = await cam?.live?.({ streamType: 2 });
