@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "date": "2026-10-09",
+  "units": {
+    "receiveBuffer": "bytes",
+    "duration": "seconds",
+    "delivery": "compressed HEVC first-slice NALs, not decoded/display frames"
+  },
+  "baseline": {
+    "startUTC": "18:27:12.570",
+    "endUTC": "18:36:17.076",
+    "durationSeconds": 544.506,
+    "cameraA": {
+      "rb": 425984,
+      "dropsStart": 0,
+      "dropsEnd": 0
+    },
+    "cameraB": {
+      "rb": 425984,
+      "dropsStart": 0,
+      "dropsEnd": 0
+    },
+    "cameraC": {
+      "rb": 212992,
+      "dropsStart": 74,
+      "dropsEnd": 771
+    },
+    "hostRcvbufErrors": [1127, 1824]
+  },
+  "candidate": {
+    "startUTC": "19:04:24.632",
+    "endUTC": "19:13:33.325",
+    "durationSeconds": 548.693438,
+    "allSessionEffectiveReceiveBuffers": 425984,
+    "allSessionDropsStart": 0,
+    "allSessionDropsEnd": 0,
+    "hostRcvbufErrors": [1920, 1920],
+    "cameraC": {
+      "firstSlices": 12723,
+      "idrFirstSlices": 269,
+      "chunkBytes": 50660539,
+      "longestGapSeconds": 26.217,
+      "gapStartUTC": "19:09:39.451",
+      "gapEndUTC": "19:10:05.668",
+      "reconnected": true,
+      "anonymousSocketSamples": [
+        {
+          "role": "original adopted probe",
+          "lastRecordedDrops": 0,
+          "rb": 425984
+        },
+        {
+          "role": "reconnect primary",
+          "sampleUTC": "19:10:03.204",
+          "drops": 0,
+          "rb": 425984
+        },
+        {
+          "role": "subsequent new primary",
+          "sampleUTC": "19:10:08.316",
+          "drops": 0,
+          "rb": 425984
+        }
+      ]
+    },
+    "workload": {
+      "liveSourceSessions": 3,
+      "unchangedGpuProducers": 2,
+      "additionalConsumerOfflineUTC": "19:05:57"
+    },
+    "debuggerActive": false
+  },
+  "limitations": [
+    "baseline C delivery interval is not matched to baseline drop interval",
+    "candidate reconnect and 26.217-second delivery gap are included",
+    "no decoded/display frame count or uninterrupted playback claim",
+    "wire metadata precedes socket drops; wire replay alone is not SDK loss accounting"
+  ]
+}
