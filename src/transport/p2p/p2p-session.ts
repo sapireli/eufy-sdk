@@ -212,6 +212,7 @@ const STALE_RETRANSMIT_DEPTH = 1024;
 const PUNCH_PROBE_SOCKETS = 7;
 /** Chosen maximum wait for a missing datagram; 250 ms is not a measured device resend delay. */
 const REORDER_WAIT_MS = 250;
+/** Maximum wait for a missing video datagram. */
 const VIDEO_REORDER_WAIT_MS = 700;
 /** Maximum later datagrams held behind a hole, bounding retained memory and the delay before resuming. */
 const REORDER_MAX_DATAGRAMS = 128;
@@ -744,8 +745,8 @@ export class P2PSession extends EventEmitter {
   }
 
   /**
-   * Ask the OS for {@link RECEIVE_BUFFER_BYTES} on a bound socket, and warn once per session when it grants
-   * less or refuses.
+   * Ask the OS for {@link RECEIVE_BUFFER_BYTES} on a bound socket, and log once per session when it grants
+   * less (debug) or refuses (warn).
    *
    * The request is made here rather than through `createSocket`'s `recvBufferSize`: Node applies that option
    * inside the bind callback, where a refusal is thrown out of reach of this session and ends the process.
@@ -760,9 +761,11 @@ export class P2PSession extends EventEmitter {
     }
     if (granted >= RECEIVE_BUFFER_BYTES || this.receiveBufferReported) return;
     this.receiveBufferReported = true;
-    this.logger.warn(
+    const [level, outcome] =
+      granted > 0 ? (["debug", ` (granted ${granted})`] as const) : (["warn", " (request refused)"] as const);
+    this.logger[level](
       `[p2p] ${this.cfg.stationSn} UDP receive buffer below the ${RECEIVE_BUFFER_BYTES} bytes requested` +
-        (granted > 0 ? ` (granted ${granted})` : " (request refused)") +
+        outcome +
         `; live video can lose keyframes. Raise the OS limit (net.core.rmem_max on Linux, ` +
         `kern.ipc.maxsockbuf on BSD) to at least ${RECEIVE_BUFFER_BYTES}.`,
     );
@@ -1104,7 +1107,7 @@ export class P2PSession extends EventEmitter {
    * start still awaiting acknowledgement — that one is already being repeated byte-identically and is
    * abandoned at its own deadline.
    *
-   * `opts.streamType` selects the attached start's `streamtype` field; absent means 1. Own-session
+   * `opts.streamType` selects the attached start's `streamtype` field; absent means 2. Own-session
    * starts use the verified value 2 and reject an explicit 1.
    */
   startLiveMedia(
@@ -1376,9 +1379,32 @@ export class P2PSession extends EventEmitter {
     this.send(this.connectAddress, RequestMessageType.DATA, data);
     return true;
   }
+  /**
+   * The level-1 twin of {@link sendRawLevel2Bytes}: the plaintext `payload` sealed AES-128-ECB under the
+   * level-1 key, signCode 1 — the seal of the level-1 media start. Returns `false` when not connected.
+   */
+  sendRawLevel1Bytes(payload: Buffer, channel: number, outerCmd: number): boolean {
+    if (!this.connectAddress) return false;
+    const data = Buffer.concat([
+      buildCommandHeader(this.seqNumber, outerCmd),
+      buildRawCommandPayload(encryptP2PData(paddingP2PData(payload), this.level1Key), channel, 1),
+    ]);
+    this.seqNumber = (this.seqNumber + 1) & 0xffff;
+    this.send(this.connectAddress, RequestMessageType.DATA, data);
+    return true;
+  }
 
-  /** Stop the realtime media stream (`CMD_STOP_REALTIME_MEDIA`, 1004) on a camera `channel`. */
-  stopLiveMedia(channel: number = STATION_CHANNEL, accountId = ""): void {
+  /**
+   * Stop the realtime media stream (`CMD_STOP_REALTIME_MEDIA`, 1004) on a camera `channel`, in the shape
+   * its runtime topology takes, as {@link startLiveMedia} selects its start:
+   *  - `homeBaseAttached`: `CMD_SET_PAYLOAD` (1350) wrapping `{cmd:1004, mChannel:channel}` at level-2.
+   *  - own-session at level-2: the direct 1004 frame whose entire plaintext is the camera channel as a
+   *    `uint32`, the same 4-byte body as the attached talkback frames. The app sends this frame on closing
+   *    an own-session camera's live view; the camera stops streaming on it within a second, and keeps
+   *    streaming through the 1350-wrapped form.
+   *  - without a level-2 key: the bare 1004 command.
+   */
+  stopLiveMedia(channel: number = STATION_CHANNEL, accountId = "", homeBaseAttached = false): void {
     this.liveStartedChannels.delete(channel);
     for (const [sequence, pending] of this.unackedLiveStarts) {
       if (pending.channel === channel) this.unackedLiveStarts.delete(sequence);
@@ -1387,7 +1413,11 @@ export class P2PSession extends EventEmitter {
       clearInterval(this.liveStartRetransmitTimer);
       this.liveStartRetransmitTimer = undefined;
     }
-    if (this.level2Key) {
+    if (this.level2Key && !homeBaseAttached) {
+      const body = Buffer.allocUnsafe(4);
+      body.writeUInt32LE(channel >>> 0, 0);
+      this.sendRawLevel2Bytes(body, channel, CMD_STOP_REALTIME_MEDIA, 8);
+    } else if (this.level2Key) {
       this.sendMediaPayloadLevel2(CMD_STOP_REALTIME_MEDIA, channel, accountId, {});
     } else {
       this.sendCommand(CMD_STOP_REALTIME_MEDIA, channel);
@@ -1598,7 +1628,7 @@ export class P2PSession extends EventEmitter {
           camera_type: 0,
           entrytype: 0,
           key: this.rsaModulus(),
-          streamtype: 1,
+          streamtype: 2,
           ...payload,
         }
       : payload;
@@ -1969,7 +1999,10 @@ export class P2PSession extends EventEmitter {
     if (advance === 0) return;
     if (advance > SEQUENCE_LOOKBACK) {
       if (0x10000 - advance <= STALE_RETRANSMIT_DEPTH) return;
-      if (this.pendingByDataType.has(dataType) && this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS)
+      if (
+        (dataType === P2PDataType.VIDEO || this.pendingByDataType.has(dataType)) &&
+        this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS
+      )
         this.trace({ phase: "sequence-restart", dataType });
       this.clearReorderTimer(dataType);
       this.reorderByType.delete(dataType);
@@ -2041,11 +2074,12 @@ export class P2PSession extends EventEmitter {
    */
   private abandonHole(dataType: number): void {
     const held = this.reorderByType.get(dataType)!.held;
-    if (this.pendingByDataType.has(dataType) && this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS)
+    if (
+      (dataType === P2PDataType.VIDEO || this.pendingByDataType.has(dataType)) &&
+      this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS
+    )
       this.trace({ phase: "datagram-gap", dataType });
     this.pendingByDataType.delete(dataType);
-    // A missing datagram may have held an entire reference picture, even if no partial frame was open.
-    // Downstream decoders must wait for the next IDR instead of decoding dependent pictures as gray.
     if (dataType === P2PDataType.VIDEO) this.emit("videoGap");
     const last = this.lastSeqByType.get(dataType)!;
     const earliest = [...held.keys()].sort((a, b) => ((a - last) & 0xffff) - ((b - last) & 0xffff))[0];

@@ -330,6 +330,8 @@ export interface SignedRetry {
 export class MegaHttpClient {
   private readonly cfg: Required<Pick<MegaClientConfig, "appName" | "appVersion" | "countryCode">> & MegaClientConfig;
   private region: RegionShard;
+  /** The host `estimate_domain` answered, persisted with the session. */
+  private estimatedDomain = "";
   private bootstrapDomain?: string;
   private sessionKey?: SessionEntry;
   /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
@@ -420,6 +422,7 @@ export class MegaHttpClient {
     const saved = this.store.load();
     if (!isSessionValid(saved) || !saved) return undefined;
     this.region = saved.region;
+    this.estimatedDomain = saved.estimatedDomain ?? "";
     this.auth_ = {
       userId: saved.userId,
       accountUserId: saved.accountUserId,
@@ -445,6 +448,25 @@ export class MegaHttpClient {
   /** The active region shard (e.g. `"eu-pr"`, `"us-pr"`), set after {@link login} or a region override. */
   get regionShard(): RegionShard {
     return this.region;
+  }
+
+  /**
+   * The shard the RTC signalling signs on: the regional prefix of the estimated domain
+   * (`…-ie-…`/`…-ie.` → `ie-pr`), else {@link regionShard}. The eu/us classification cannot name shards
+   * like `ie-pr`, whose accounts need the IE sign host and cluster.
+   */
+  get rtcShard(): string {
+    const m = /-([a-z]{2})(?:[.-]|$)/i.exec(this.estimatedDomain);
+    return m ? `${m[1].toLowerCase()}-pr` : this.region;
+  }
+
+  /**
+   * The credentials the RTC signalling needs; `undefined` while logged out. The sign is refused
+   * ("gtoken not equal userid") unless its gtoken is the one every authed HTTP call carries.
+   */
+  rtcIdentity(): { authToken: string; userId: string; gtoken: string } | undefined {
+    if (!this.auth_) return undefined;
+    return { authToken: this.auth_.authToken, userId: this.auth_.userId, gtoken: gtoken(this.gtokenUserId()) };
   }
 
   /**
@@ -555,6 +577,7 @@ export class MegaHttpClient {
     const env = res.data as ApiEnvelope<Record<string, unknown>>;
     const d = env?.data ?? {};
     const domain = (d.domain ?? d.host ?? d.server_secret_info ?? "") as string;
+    this.estimatedDomain = domain;
     const blob = JSON.stringify(d);
     if (blob.includes("-eu-") || domain.includes("-eu-")) this.region = "eu-pr";
     else if (blob.includes("-us-") || domain.includes("-us-")) this.region = "us-pr";
@@ -827,6 +850,23 @@ export class MegaHttpClient {
   }
 
   /**
+   * Fetch the account's devices as the `devicerelation` service lists them, `{attribute: 7, house_id: ""}`.
+   *
+   * Each entry is `{device: {device_sn, dps, …}}`, and `dps` is the cloud's last-known value of every
+   * data point that device has reported, keyed by DP number. Answered for an account a device is shared
+   * with as well as for its owner. Sent with `category: eufy_home`, without which the service answers
+   * `10000`.
+   */
+  getDeviceRelationList<T = unknown>(): Promise<T> {
+    return this.post<T>(
+      "devicerelation",
+      "/app/devicerelation/get_device_list",
+      { attribute: 7, house_id: "" },
+      { category: "eufy_home" },
+    );
+  }
+
+  /**
    * Fetch one page of a device's **cleaning history** from the mega `clean` service.
    *
    * Body is `{ device_sn, num, page }` — `num` is the page SIZE and `page` is 1-based. Returns the raw
@@ -904,13 +944,21 @@ export class MegaHttpClient {
   }
 
   async registerPushToken(token: string): Promise<void> {
-    // Real endpoint (com.eufy.security.push_functional.PushManager) is
-    // `register_push_token` — `/app/push/register` 404s. Fields match the
-    // app's PushManager: is_notification_enable + token (+ empty voip_token).
     await this.post("push", "/app/push/register_push_token", {
       is_notification_enable: true,
       token,
       voip_token: "",
+    });
+
+    await this.securityAppPost("/v1/apppush/register_push_token", {
+      is_notification_enable: true,
+      token,
+      transaction: String(Date.now()),
+    });
+
+    await this.securityAppPost("/v1/app/review/app_push_check", {
+      app_type: "eufySecurity",
+      transaction: String(Date.now()),
     });
   }
 
@@ -1330,6 +1378,7 @@ export class MegaHttpClient {
       authToken: this.auth_.authToken,
       geoKey: this.auth_.geoKey,
       region: this.region,
+      estimatedDomain: this.estimatedDomain,
       openudid: this.openudid,
       phoneModel: this.phoneModel,
       mediaUserAgent: this.mediaUserAgent,

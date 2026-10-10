@@ -101,14 +101,14 @@ describe("an attached media start with no level-2 key", () => {
     const accountId = "0".repeat(40);
 
     session.startLiveMedia(2, accountId, true);
-    expect(decodedFrame(0).value).toMatchObject({ cmd: 1003, payload: { streamtype: 1 } });
+    expect(decodedFrame(0).value).toMatchObject({ cmd: 1003, payload: { streamtype: 2 } });
 
-    session.startLiveMedia(2, accountId, true, { streamType: 2 });
+    session.startLiveMedia(2, accountId, true, { streamType: 1 });
     const start = decodedFrame(1);
     expect(start.header).toMatchObject({ commandId: 1350, channel: 2, signCode: 8 });
-    expect(start.value).toMatchObject({ cmd: 1003, payload: { streamtype: 2 } });
+    expect(start.value).toMatchObject({ cmd: 1003, payload: { streamtype: 1 } });
 
-    session.stopLiveMedia(2, accountId);
+    session.stopLiveMedia(2, accountId, true);
     const stop = decodedFrame(2);
     expect(stop.header).toMatchObject({ commandId: 1350, channel: 2, signCode: 8 });
     expect(stop.value).toEqual({ account_id: accountId, cmd: 1004, mChannel: 2, mValue3: 1004, payload: {} });

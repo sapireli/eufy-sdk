@@ -47,7 +47,7 @@ done
 # Every `Capability` id, read off the union in src/model/types.ts rather than restated — a capability
 # added there is covered here with no edit, which is the only way a hardcoded list stays true.
 caps=$(sed -n '/^export type Capability =$/,/;$/p' src/model/types.ts |
-  grep -oE '"[a-z_]+"' | tr -d '"' | paste -sd '|')
+  grep -oE '"[a-z_]+"' | tr -d '"' | paste -sd '|' -)
 if [ -z "$caps" ]; then
   echo "::error::could not read the Capability union from src/model/types.ts — this guard would pass while checking nothing"
   exit 1
@@ -56,7 +56,8 @@ fi
 # The camelCased accessor each capability id installs (`vacuum_clean` -> `vacuumClean`), which is how a
 # capability object is reached on a Device.
 accessors=$(echo "$caps" | tr '|' '\n' |
-  sed -E 's/_([a-z])/\U\1/g' | paste -sd '|')
+  awk -F_ '{printf "%s", $1; for (i = 2; i <= NF; i++) printf "%s%s", toupper(substr($i, 1, 1)), substr($i, 2); print ""}' |
+  paste -sd '|' -)
 
 # The lines a reviewer means by "the code": full-line comments dropped, trailing `//` comments cut.
 # Neither target file puts `//` inside a string literal, so cutting at the first one is safe here.

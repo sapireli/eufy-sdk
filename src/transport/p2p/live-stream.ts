@@ -34,6 +34,15 @@ const SC4 = Buffer.from([0, 0, 0, 1]);
 const SC3 = Buffer.from([0, 0, 1]);
 
 /**
+ * AudioSpecificConfig (ISO/IEC 14496-3) of a station's `aac-eld` audio, which the station does not send: an
+ * `aac-eld` frame carries one raw access unit after its 16-byte header, with no transport framing.
+ *
+ * Fields: audio object type 39 (ER AAC-ELD), 16 kHz, mono, 480-sample frames, no LD-SBR. These are the bytes the
+ * v6 app's native AAC decoder (`AudioFDKDecode`) configures libfdk with for raw ELD access units.
+ */
+const AAC_ELD_AUDIO_SPECIFIC_CONFIG = Buffer.from("f8f03000", "hex");
+
+/**
  * Codec ids the station puts at {@link AUDIO_TYPE_OFFSET}, as the v6 app maps them
  * (`AudioReader.AAC_LC = 0`, `G711A = 2`, `AAC_ELD = 7`).
  *
@@ -135,11 +144,11 @@ export class LiveStream extends EventEmitter {
   private lastCodec: VideoCodec = "h264";
   /** Rebuilds an access unit the station split across several frames — see {@link AccessUnitAssembler}. */
   private readonly units = new AccessUnitAssembler((drop) => this.reportDroppedUnit(drop));
+  /** Whether a missing video datagram or incomplete unit invalidated the current reference chain. */
   private awaitingKeyframeAfterGap = false;
   private readonly videoGapHandler = () => {
-    this.units.reset();
+    this.units.discard();
     this.awaitingKeyframeAfterGap = true;
-    this.logger.warn(`[live ch${this.channel}] lost video datagram after retransmit wait; waiting for a keyframe`);
   };
   /** The channel inbound media must be tagged with, once {@link acceptsMedia} trusts the station's tag. */
   private mediaChannel?: number;
@@ -303,7 +312,7 @@ export class LiveStream extends EventEmitter {
     if (this.stallTimer) clearTimeout(this.stallTimer);
     this.stallTimer = undefined;
     try {
-      this.session.stopLiveMedia(this.opts.channel, this.opts.accountId);
+      this.session.stopLiveMedia(this.opts.channel, this.opts.accountId, this.opts.homeBaseAttached);
     } catch (e) {
       this.logger.debug(`[live] stopLiveMedia ignored: ${e instanceof Error ? e.message : e}`);
     }
@@ -366,7 +375,12 @@ export class LiveStream extends EventEmitter {
             this.logger.debug(`[live] dropping audio frame: unknown codec id ${codecId ?? "missing"}`);
           } else {
             this.lastDeliveredMediaAt = Date.now();
-            this.emit("audio", { codec, data: audio });
+            this.emit(
+              "audio",
+              codec === "aac-eld"
+                ? { codec, data: audio, config: AAC_ELD_AUDIO_SPECIFIC_CONFIG }
+                : { codec, data: audio },
+            );
           }
         }
       }
