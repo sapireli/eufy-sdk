@@ -359,6 +359,7 @@ export class LiveStream extends EventEmitter {
           this.settleKeepalive();
           this.lastDeliveredMediaAt = Date.now();
           this.emit("video", {
+            sourceTimestampMs: unit.sourceTimestampMs,
             keyframe: unit.keyframe,
             width: unit.width,
             height: unit.height,
