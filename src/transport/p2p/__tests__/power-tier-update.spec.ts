@@ -20,7 +20,7 @@ function router(devices: EufyDevice[]) {
 
 describe("P2P power-tier update", () => {
   it("updates an attached camera's source without changing its HomeBase session tier", () => {
-    const child = { sn: CHILD, stationSn: BASE, raw: { parent_sn: BASE, device_channel: 2 } } as EufyDevice;
+    const child = { sn: CHILD, stationSn: BASE, channel: 2, raw: { parent_sn: BASE, device_channel: 2 } } as EufyDevice;
     const p2p = router([child]);
     const source = { setPowerTier: vi.fn() };
     (p2p as any).liveSources.set(`${BASE}:2`, source);
@@ -33,7 +33,7 @@ describe("P2P power-tier update", () => {
   });
 
   it("re-evaluates an idle standalone session when its local claim changes", () => {
-    const solo = { sn: CHILD, stationSn: CHILD, raw: { device_channel: 0 } } as EufyDevice;
+    const solo = { sn: CHILD, stationSn: CHILD, channel: 0, raw: { device_channel: 0 } } as EufyDevice;
     const p2p = router([solo]);
     const refresh = vi.spyOn((p2p as any).manager, "refreshPower");
     p2p.updatePowerTier(CHILD, "battery");
@@ -41,8 +41,13 @@ describe("P2P power-tier update", () => {
   });
 
   it("does not change another attached camera's stream when their station channel is shared", () => {
-    const child = { sn: CHILD, stationSn: BASE, raw: { parent_sn: BASE, device_channel: 2 } } as EufyDevice;
-    const other = { sn: OTHER_CHILD, stationSn: BASE, raw: { parent_sn: BASE, device_channel: 2 } } as EufyDevice;
+    const child = { sn: CHILD, stationSn: BASE, channel: 2, raw: { parent_sn: BASE, device_channel: 2 } } as EufyDevice;
+    const other = {
+      sn: OTHER_CHILD,
+      stationSn: BASE,
+      channel: 2,
+      raw: { parent_sn: BASE, device_channel: 2 },
+    } as EufyDevice;
     const p2p = router([child, other]);
     const source = { setPowerTier: vi.fn() };
     (p2p as any).liveSources.set(`${BASE}:2`, source);
