@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
+import { p2pVideoFrame } from "./live-source-fixtures.js";
 
 /**
  * A camera that finds the station's own session claimed opens a SECOND connection, and that connection
@@ -27,6 +28,9 @@ class FakeSession extends EventEmitter {
   opts: Record<string, unknown>;
   hasKey: boolean;
   keyGate?: Promise<void>;
+  decodeVideoFrame(data: Buffer) {
+    return data.subarray(22);
+  }
   startLiveMedia = vi.fn();
   stopLiveMedia = vi.fn();
   constructor(opts: Record<string, unknown>) {
@@ -248,7 +252,14 @@ describe("a second live camera on a claimed station session", () => {
       expect(sources(r).has(`${STATION_SN}:0`)).toBe(false);
       expect(sources(r).get(`${STATION_SN}:2`)).toBe(b);
       expect(built[1].isConnected).toBe(true);
-      const frame = { data: Buffer.from("000000016588", "hex"), keyframe: true, codec: "h264", width: 640, height: 480, timestamp: 1 };
+      const frame = {
+        data: Buffer.from("000000016588", "hex"),
+        keyframe: true,
+        codec: "h264",
+        width: 640,
+        height: 480,
+        timestamp: 1,
+      };
       (b as unknown as { stream: EventEmitter }).stream.emit("video", frame);
       expect(delivered).toHaveBeenCalledWith(frame);
       await r.closeAll();
@@ -265,7 +276,9 @@ describe("a second live camera on a claimed station session", () => {
     const r = router();
     (await openLive(r, CAM_A)).attach();
     let releaseKey!: () => void;
-    nextSessionKeyGate = new Promise<void>((resolve) => { releaseKey = resolve; });
+    nextSessionKeyGate = new Promise<void>((resolve) => {
+      releaseKey = resolve;
+    });
     const opening = openLive(r, CAM_B);
     try {
       await vi.waitFor(() => expect(built).toHaveLength(2));
@@ -285,7 +298,6 @@ describe("a second live camera on a claimed station session", () => {
     }
   });
 
-
   it("explicit closeAll still closes all live connections and removes every ownership claim", async () => {
     const r = router();
     const a = await openLive(r, CAM_A);
@@ -301,5 +313,43 @@ describe("a second live camera on a claimed station session", () => {
     expect(sources(r).size).toBe(0);
     expect(sessionKeys(r).size).toBe(0);
   });
+});
 
+describe("resetting an acquired camera source", () => {
+  for (const resetFirst of [false, true])
+    it(`retains the other acquired session and its delivery (${resetFirst ? "base" : "dedicated"} reset)`, async () => {
+      const r = router();
+      const a = await r.sharedLiveSourceFor(CAM_A, {}, true),
+        ca = a.attach();
+      const b = await r.sharedLiveSourceFor(CAM_B, {}, true),
+        cb = b.attach();
+      ca.on("error", () => {});
+      cb.on("error", () => {});
+      const target = resetFirst ? CAM_A : CAM_B;
+      const sibling = resetFirst ? cb : ca;
+      const session = built[resetFirst ? 1 : 0];
+      const channel = resetFirst ? 2 : 0;
+      const seen: unknown[] = [];
+      sibling.on("video", (frame) => seen.push(frame));
+      session.emit("data", p2pVideoFrame({ nal: Buffer.from([0x65, 0x88]), keyframe: true, channel }));
+      sibling.pause();
+      session.emit("data", p2pVideoFrame({ nal: Buffer.from([0x41, 0x9a]), channel }));
+      const manager = (r as unknown as { manager: { entries: Map<string, { retained: number }> } }).manager;
+      const siblingOwner = resetFirst ? `${STATION_SN}#live:2` : STATION_SN;
+      const retainedBefore = manager.entries.get(siblingOwner)?.retained;
+      const baseRetainedBefore = manager.entries.get(STATION_SN)!.retained;
+      expect(retainedBefore).toBeGreaterThan(0);
+      expect(await r.resetCameraStream(target)).toBe(true);
+      expect(manager.entries.get(siblingOwner)?.retained).toBe(retainedBefore);
+      expect(session.isConnected).toBe(true);
+      expect(built[0].isConnected).toBe(true);
+      if (resetFirst) expect(manager.entries.get(STATION_SN)?.retained).toBe(baseRetainedBefore - 1);
+      if (!resetFirst) expect(built[1].isConnected).toBe(false);
+      sibling.resume();
+      session.emit("data", p2pVideoFrame({ nal: Buffer.from([0x41, 0x9b]), channel }));
+      expect(seen).toHaveLength(3);
+      expect(sources(r).has(`${STATION_SN}:${resetFirst ? 0 : 2}`)).toBe(false);
+      await r.closeAll();
+      expect(manager.entries.size).toBe(0);
+    });
 });

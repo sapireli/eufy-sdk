@@ -1775,6 +1775,11 @@ export class EufyMega extends EventEmitter {
     return this.devicePower(parentSn);
   }
 
+  /** Retire one camera's media source and dedicated connection, preserving sibling station streams. */
+  async resetCameraStream(deviceSn: string): Promise<boolean> {
+    return this.p2p.resetCameraStream(deviceSn);
+  }
+
   /**
    * Speculatively open the P2P session of the station behind `deviceSn`, if the caller opted this
    * semantic event in — so a stream or talkback opened right after a doorbell ring or a detection starts
