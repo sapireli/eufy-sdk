@@ -53,7 +53,33 @@ The original host adapter fails the exact-serial safety regression by attempting
 to close the shared base connection; the candidate delegates camera recovery
 without prefix iteration. Intentional station-wide peer-policy transitions retain
 a separately named host operation. Seven focused host adapter/policy tests pass.
-No live deployment, controlled recovery, or upstream PR is claimed here.
+## Controlled live ownership checkpoint
+
+The integrating host staged source `d711f98e8f584d14e8685a322cb4784abddc7b01`
+with bundle `d5db321bbd4ce03397dc0d2b8bd92de3603b5edc3f71bfe0be63b5a464835c92`.
+One public reset of the base-owned camera completed in 15 ms and returned true.
+All three public transport-session objects retained their identities and remained
+connected afterward. Across the 44.3-second API window, a healthy sibling source
+kept its source identity, advanced its media sequence by 1,361, gained 667 input
+and 665 output pictures, and never reported idle. The reset camera obtained a new
+source identity; three samples reported non-streaming before it recovered.
+
+Both hardware display clients continued increasing the sibling's rendered counters
+without an error or reset. However, 16 shared pictures had measured ingress ages
+508–739 ms, and the sibling producer recorded 14 additional stale observations.
+The inspector instance lookup's timing cost was not measured, and no simultaneous
+source-wire observation exists for this reset. These results show ownership
+preservation and resumed delivery; they do not prove timing neutrality, that the
+reset caused or avoided age tails, or that upstream source silence is repaired.
+
+The initial candidate ran in one host process, but its rollback timer later raced
+and restored the preceding SDK. The host subsequently promoted the candidate in
+a new process. The subsequent candidate was retained after an ordinary 45-second gate. All four
+hardware display feeds had zero queues, no errors, retries, counter resets, or new
+500-ms ingress-age misses. Both rollback timer and service were confirmed inactive.
+This short ordinary-playback gate is separate from the inspector-confounded reset
+window; it does not establish sustained behavior or timing neutrality of recovery.
+No upstream PR is claimed here.
 
 ## Later upstream handoff
 
