@@ -51,9 +51,9 @@ device-state semantics.
 **Proof limit:** poll completions before that trigger were not instrumented.
 The witness proves the forced recovery and the incompatible event contract; it
 does not independently prove every preceding HTTP poll succeeded or completed.
-The new API is not yet live deployed at this report's gate, and no thirty-minute
-post-deployment watchdog-survival observation is claimed. The separately measured
-heartbeat-alive HomeBase VIDEO pauses remain unresolved.
+At the original source-commit gate, the API was not live deployed and no thirty-minute
+survival observation was claimed. The later checkpoint below supersedes that
+deployment status only. Heartbeat-alive HomeBase VIDEO pauses remain unresolved.
 
 Private journal artifact `poll-watchdog-trigger-journal.jsonl` SHA-256:
 `33bfa33701df550ca2837a236da4bb7baa1b40a2d6e881ac7fe93262bebca25e`.
@@ -74,9 +74,54 @@ Focused poll/device-state suites: **44 tests passed**. Full fork suite:
 **4,108 tests in 236 files passed**. Typecheck, build and diff whitespace checks
 passed. Candidate bundle SHA-256:
 `b23b4ddaa58ad4669cd3a528de71f9570c3f14ffe7609062820be822c281b83b`.
-The candidate has not changed the running package during paired transport
-captures. Live deployment and a sustained completion/watchdog observation are
-separate gates owned by the integrating host.
+The candidate did not change the running package during the earlier paired
+transport captures. The later live checkpoint below records deployment and
+sustained completion separately from the unit/build gates.
+
+## Later live deployment checkpoint
+
+The integration deployed source `830fa1c962efea746b053821c50d92a76442d5e9`
+with bundle `b23b4ddaa58ad4669cd3a528de71f9570c3f14ffe7609062820be822c281b83b`
+at **20:12:31 UTC on 12 October 2026**. All 155 dist files plus package.json
+(156 package files) matched the built candidate byte for byte. This later
+record is documentation only; it does not rebuild or change that source bundle.
+
+A 366-row private health record sampled approximately every five seconds from
+**20:15:24.483332 to 20:45:49.483455 UTC** (1,825.000123 seconds between first
+and last samples). The same deployed process remained alive at every sample.
+Authentication was `ok`, sessionLost was false, go2rtc was running, reported
+stalls were zero, and health was ok at every sample. Three actual settled poll
+completions reached the integrating host, all with status `ok`:
+
+- 20:22:43.317 UTC.
+- 20:32:44.432 UTC.
+- 20:42:45.314 UTC.
+
+The fifteen-minute rollback timer was canceled only after the first observed
+completion and healthy checks; the terminal health record confirms cancellation.
+The bounded 20:12:31–20:47:00 UTC service journal contains 109 rows and **no
+`realtime stalled`** event. The process survived more than 33 minutes from
+its deployment through the final health sample, beyond the original watchdog's
+30-minute threshold. This verifies the deployed poll-completion/watchdog contract
+for this observation, not all future cloud conditions.
+
+**Media continuity limit:** all three selected sources appeared in 365 of 366
+health samples. One sample at 20:24:54.483723 listed two sources. The journal
+shows one feed stopped at 20:24:52.150943, feed-ended/reopening at
+20:24:52.154226, and streaming again at 20:24:55.015341; neighboring health
+samples listed all three. There was no poll-idle reset or process restart at
+that boundary. Its underlying cause was not established by this health/journal
+record. Do not claim uninterrupted media or resolution of the distinct source
+pauses from this watchdog proof.
+
+Private metadata artifacts (identities remain private):
+
+- `poll-completion-live-1830s.jsonl`, SHA-256
+  `ea25fe47ef54a0227a1b49850315f8e4dbf31a93d7eaec3f92f94767203dbc60`.
+- `poll-completion-live-journal.jsonl`, SHA-256
+  `3f90289f85d63a514b67c7220bc843f1210fd9f79b2b5471d426fd83687f2ec2`.
+- Full deployed-dist manifest SHA-256
+  `aeeb899f2cc699c81314a98986cc6f2bd57ff6538154be768a08aee805ece6d0`.
 
 ## Upstream handoff
 
