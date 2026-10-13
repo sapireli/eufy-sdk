@@ -23,6 +23,7 @@
 import { EventEmitter } from "node:events";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { RtcPeer, type RtcPeerOptions, type TurnConfig } from "./peer.js";
+import { PortalLinkType } from "./portal-packet.js";
 import { scallJsonToSdp, sdpToScallJson, toWireCandidate } from "./scall-sdp.js";
 import { RtcSignalingClient, type RtcInnerMessage, type RtcSignalingOptions } from "./signaling.js";
 
@@ -39,8 +40,10 @@ export interface RtcSessionEvents {
   connected: [];
   close: [];
   error: [err: Error];
-  /** A reassembled frame: portal packet bytes + the link type it arrived on. */
+  /** A reassembled command or notify frame: portal packet bytes + the link type it arrived on. */
   commandData: [frame: Buffer, linkType: number];
+  /** A reassembled live-video frame. */
+  mediaData: [frame: Buffer];
 }
 
 interface CallPayload {
@@ -87,8 +90,8 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
     });
     this.signaling.on("error", (e) => this.emit("error", e));
 
-    this.peer.on("iceCandidate", (c) => this.signaling.sendInfoCandidate(toWireCandidate(c)));
-    this.peer.on("iceGatheringComplete", () => this.signaling.sendInfoCandidate(""));
+    this.peer.on("iceCandidate", (c) => this.trickle(toWireCandidate(c)));
+    this.peer.on("iceGatheringComplete", () => this.trickle(""));
     this.peer.on("commandChannelOpen", () => {
       if (this.connected) return;
       this.connected = true;
@@ -108,7 +111,10 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
       }
     });
     this.peer.on("error", (e) => this.emit("error", e));
-    this.peer.on("data", (frame, linkType) => this.emit("commandData", frame, linkType));
+    this.peer.on("data", (frame, linkType) => {
+      if (linkType === PortalLinkType.LIVE) this.emit("mediaData", frame);
+      else this.emit("commandData", frame, linkType);
+    });
   }
 
   get isConnected(): boolean {
@@ -135,6 +141,11 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
     return this.peer.sendCommand(portalPacket);
   }
 
+  /** Send unframed bytes on the command channel; false when it isn't open. */
+  sendRaw(bytes: Buffer): boolean {
+    return this.peer.sendRaw(bytes);
+  }
+
   /**
    * Hang up and tear both sides down; `close` fires once, here if nothing announced it before. A
    * `connect()` still waiting for the signalling auth is rejected and its timer stopped.
@@ -152,6 +163,16 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
     this.peer.close();
     this.settleAuth(new Error("RTC session closed while waiting for signalling auth"));
     this.announceClose();
+  }
+
+  /**
+   * Trickle one local candidate, or the empty end-of-candidates. The native peer can report one after the
+   * signalling socket has closed, and sending then throws inside a native callback, where the throw can't
+   * be caught and aborts the process. A candidate with no open socket is dropped.
+   */
+  private trickle(candidate: string): void {
+    if (!this.signaling.isOpen) return;
+    this.signaling.sendInfoCandidate(candidate);
   }
 
   private announceClose(): void {

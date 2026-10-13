@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Command } from "../../core/contracts.js";
+import type { Command, MediaProvider } from "../../core/contracts.js";
 import type { EufyDevice } from "../../core/types.js";
 import { DeviceType } from "../../model/device-types.js";
 import type { RtcRoute } from "../../transport/rtc/command-router.js";
@@ -20,9 +20,12 @@ function fixture(stationType: number = DeviceType.STATION_9000) {
   });
   const internals = client as unknown as {
     registry: { list(): EufyDevice[]; devices: EufyDevice[] };
-    rtc: { dispatchCommand(route: RtcRoute, cmd: Command): Promise<void> };
-    p2p: { dispatchCommand(sn: string, cmd: Command): Promise<void> };
+    rtc: { dispatchCommand(route: RtcRoute, cmd: Command): Promise<void>; mediaProviderFor(route: unknown): unknown };
+    p2p: { dispatchCommand(sn: string, cmd: Command): Promise<void>; mediaProviderFor(sn: string): MediaProvider };
+    powerOverrides: Map<string, "always-on" | "battery">;
+    mediaProviderFor(sn: string): MediaProvider;
     routeCommand(sn: string, cmd: Command): Promise<void>;
+    rtcMediaFor(sn: string): unknown;
   };
   const devices = [
     { sn: HUB, model: "T9000", raw: { device_type: stationType, member: { admin_user_id: "synthetic-admin" } } },
@@ -82,15 +85,9 @@ describe("station-owned RTC command routing", () => {
     const { internals, rtc, p2p, devices } = fixture(DeviceType.NVR_S4_MAX);
     devices[0]!.model = "T8N00";
     devices[1]!.model = "T8E00";
-    if (issue === "missing") {
-      delete devices[1]!.channel;
-      devices[1]!.raw = { parent_sn: HUB };
-    }
+    if (issue === "missing") Object.assign(devices[1]!, { channel: undefined, raw: { parent_sn: HUB } });
     if (issue === "shared") devices.push({ ...devices[1]!, sn: "T8000P0000000002" });
-    if (issue === "mismatched") {
-      devices[1]!.channel = 4;
-      devices[1]!.raw = { parent_sn: HUB, device_channel: 4 };
-    }
+    if (issue === "mismatched") Object.assign(devices[1]!, { channel: 4, raw: { parent_sn: HUB, device_channel: 4 } });
     await expect(internals.routeCommand(CAMERA, command)).rejects.toThrow("unambiguous attached-device channel");
     expect(rtc).not.toHaveBeenCalled();
     expect(p2p).not.toHaveBeenCalled();
@@ -153,5 +150,73 @@ describe("station-owned RTC command routing", () => {
     await expect(internals.routeCommand(CAMERA, command)).rejects.toThrow("unambiguous attached-device channel");
     expect(rtc).not.toHaveBeenCalled();
     expect(p2p).not.toHaveBeenCalled();
+  });
+
+  it("serves an attached camera's media over RTC on its resolved channel, and no other device's", () => {
+    const { internals } = fixture();
+    const media = vi.spyOn(internals.rtc, "mediaProviderFor").mockReturnValue({ live: vi.fn() });
+    expect(internals.rtcMediaFor(CAMERA)).toBeDefined();
+    expect(media).toHaveBeenCalledExactlyOnceWith({
+      stationSn: HUB,
+      adminUserId: "synthetic-admin",
+      attached: true,
+      cameraSn: CAMERA,
+      channel: 3,
+    });
+    expect(internals.rtcMediaFor(HUB)).toBeUndefined();
+    const other = fixture(DeviceType.HB3);
+    expect(other.internals.rtcMediaFor(CAMERA)).toBeUndefined();
+  });
+
+  it("keeps RTC media routing and forwards changes to the local power claim", async () => {
+    const { internals } = fixture();
+    const snapshot = vi.fn(async (_opts: Parameters<MediaProvider["snapshotLive"]>[0]) => ({
+      jpeg: Buffer.alloc(0),
+      width: 1,
+      height: 1,
+    }));
+    const rtc = vi.spyOn(internals.rtc, "mediaProviderFor").mockReturnValue({ snapshotLive: snapshot });
+    const p2p = vi.spyOn(internals.p2p, "mediaProviderFor").mockImplementation(() => {
+      throw new Error("P2P media must not be selected for this RTC camera");
+    });
+    internals.powerOverrides.set(CAMERA, "always-on");
+    const media = internals.mediaProviderFor(CAMERA);
+    await media.snapshotLive({ powered: "battery" });
+    expect(snapshot).toHaveBeenLastCalledWith({ powered: "wired" });
+    internals.powerOverrides.set(CAMERA, "battery");
+    await media.snapshotLive({ powered: "wired" });
+    expect(snapshot).toHaveBeenLastCalledWith({ powered: "battery" });
+    expect(rtc).toHaveBeenCalledOnce();
+    expect(p2p).not.toHaveBeenCalled();
+  });
+
+  it("serves no RTC media for a camera attached to a T8N00, whose route carries commands only", () => {
+    const { internals, devices } = fixture();
+    devices[0]!.model = "T8N00";
+    devices[0]!.raw = { member: { admin_user_id: "synthetic-admin" } };
+    const media = vi.spyOn(internals.rtc, "mediaProviderFor").mockReturnValue({ live: vi.fn() });
+    expect(internals.rtcMediaFor(CAMERA)).toBeUndefined();
+    expect(media).not.toHaveBeenCalled();
+  });
+});
+
+describe("command context of a device behind a station", () => {
+  /** The context a capability gets, from the record the command sink already holds. */
+  const contextOf = (internals: unknown, sn: string, model: string) =>
+    (
+      internals as {
+        commandContext(sn: string, known: unknown): Promise<{ stationDeviceType?: number }>;
+      }
+    ).commandContext(sn, { sn, model, params: {} });
+
+  it("names the cloud device_type of the station a camera hangs off, and none for the station itself", async () => {
+    const t9000 = fixture();
+    expect((await contextOf(t9000.internals, CAMERA, "T8425")).stationDeviceType).toBe(DeviceType.STATION_9000);
+    expect((await contextOf(t9000.internals, HUB, "T9000")).stationDeviceType).toBeUndefined();
+    const linkedOnly = fixture();
+    linkedOnly.devices[1]!.raw = { device_channel: 3 };
+    expect((await contextOf(linkedOnly.internals, CAMERA, "T8425")).stationDeviceType).toBe(DeviceType.STATION_9000);
+    const hb3 = fixture(DeviceType.HB3);
+    expect((await contextOf(hb3.internals, CAMERA, "T8425")).stationDeviceType).toBe(DeviceType.HB3);
   });
 });

@@ -30,6 +30,8 @@ No upstream-base verification or live receipt-preservation proof is implied.
 `openReadable({ objectMode: true, receiptMetadata: true })` yields frozen
 ReceivedVideoFrame envelopes:
 
+<!-- typecheck: skip — illustrative envelope shape, not executable TypeScript -->
+
 ```ts
 {
   frame: LiveVideoFrame,

@@ -26,6 +26,7 @@ class FakeSignaling extends EventEmitter {
 }
 
 class FakePeer extends EventEmitter {
+  sendRaw = vi.fn(() => true);
   init = vi.fn(async (_turn?: TurnConfig) => {});
   handleRemoteOffer = vi.fn(async (_sdp: string) => ANSWER);
   addRemoteCandidate = vi.fn();
@@ -147,6 +148,14 @@ describe("RtcSession", () => {
     releaseSign("SIGN");
     await expect(connecting).rejects.toThrow(/closed before the call was placed/);
     expect(s.sig.connect).not.toHaveBeenCalled();
+  });
+
+  it("drops a local candidate the peer reports after the signalling socket closed", async () => {
+    const s = await authenticated(setup());
+    s.sig.isOpen = false;
+    s.peer.emit("iceCandidate", "our-host");
+    s.peer.emit("iceGatheringComplete");
+    expect(s.sig.sendInfoCandidate).not.toHaveBeenCalled();
   });
 
   it("runs the whole exchange: grant → offer → answer → trickle → ack → open", async () => {
@@ -275,5 +284,19 @@ describe("RtcSession", () => {
     s.sig.hub({ action: 3, dataType: "scall", data: { status: 100, turn: TURN } });
     await flush();
     expect(s.errors.map((e) => e.message)).toEqual(["no native module"]);
+  });
+
+  it("hands live-link frames to mediaData and everything else to commandData, and sends raw bytes", async () => {
+    const s = await authenticated(setup());
+    const media: string[] = [];
+    const commands: string[] = [];
+    s.session.on("mediaData", (f) => media.push(f.toString()));
+    s.session.on("commandData", (f) => commands.push(f.toString()));
+    s.peer.emit("data", Buffer.from("video"), 5);
+    s.peer.emit("data", Buffer.from("ack"), 1);
+    expect(media).toEqual(["video"]);
+    expect(commands).toEqual(["ack"]);
+    expect(s.session.sendRaw(Buffer.from("k"))).toBe(true);
+    expect(s.peer.sendRaw).toHaveBeenCalledWith(Buffer.from("k"));
   });
 });

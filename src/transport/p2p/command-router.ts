@@ -9,6 +9,7 @@
  * (the client gates them on device capabilities and emits typed events). This keeps transport free of
  * any `model/` import — the capability↔transport decorrelation invariant.
  */
+import { abortable } from "../abortable.js";
 import type { MegaHttpClient } from "../http/mega-client.js";
 import type { EufyDevice } from "../../core/types.js";
 import type {
@@ -61,7 +62,7 @@ import {
 } from "./recording-download.js";
 import type { FfmpegLevel } from "../ffmpeg.js";
 import { LiveStream } from "./live-stream.js";
-import { SharedLiveSource, type Consumer } from "./shared-live-source.js";
+import { SharedLiveSource, attachUnlessAborted, type Consumer } from "./shared-live-source.js";
 import {
   SessionManager,
   SessionSupersededError,
@@ -83,24 +84,6 @@ import { stationChannels, stationOf } from "./station-channels.js";
  * sends are harmless). Bump if drops are seen on marginal links.
  */
 const DIRECT_CMD_SENDS = 5;
-
-/**
- * Settle `work` as it settles, or reject the moment `signal` aborts, whichever comes first.
- *
- * The underlying wait is left to finish on its own: these are shared negotiations whose result other callers
- * are also waiting on, so a caller abandoning its own call must not cancel the work itself. This abandons
- * WAITING, which is the only part that belonged to the caller.
- */
-function abortable<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return work;
-  signal.throwIfAborted();
-  return Promise.race([
-    work,
-    new Promise<never>((_resolve, reject) => {
-      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-    }),
-  ]);
-}
 
 /**
  * How long each command is given where the level-2 key is a REQUIREMENT — the HomeBase-routed commands
@@ -440,28 +423,13 @@ export class P2PCommandRouter {
     if (station === sn) this.manager.refreshPower(station);
   }
 
-  /**
-   * Retire only this camera's cached media source. Dedicated media connections are closed;
-   * a shared station/control connection is preserved while its sibling sources remain usable.
-   * Returns false when no loaded camera source exists, without opening a connection.
-   * Does not cancel concurrent acquisitions or close a base/control connection.
-   */
+  /** Drop this camera's cached media source; return false when no source is cached. */
   async resetCameraStream(sn: string): Promise<boolean> {
-    const device = this.recordFor(sn);
     const address = stationChannels(this.deps.listDevices()).get(sn);
-    if (!device || !address || !("channel" in address)) return false;
-    const station = stationOf(device);
-    const key = `${station}:${address.channel}`;
-    const source = this.liveSources.get(key);
-    if (!source) return false;
-    const owner = this.liveSessionKeys.get(key);
-    this.liveSessionKeys.delete(key);
-    this.liveSources.delete(key);
-    this.liveSourceOpts.delete(key);
-    source.dispose();
-    if (owner !== undefined && P2PCommandRouter.isMediaSessionKey(owner)) {
-      await this.manager.close(owner);
-    }
+    if (!address || !("channel" in address)) return false;
+    const key = `${this.stationKeyOf(sn)}:${address.channel}`;
+    if (!this.liveSources.has(key)) return false;
+    this.dropLiveSource(key);
     return true;
   }
 
@@ -816,11 +784,11 @@ export class P2PCommandRouter {
       },
       live: async (opts) => {
         const source = await this.sharedLiveSourceFor(sn, opts as SharedLiveOpts, true);
-        return this.attachUnlessAborted(source, (opts as SharedLiveOpts | undefined)?.signal);
+        return attachUnlessAborted(source, (opts as SharedLiveOpts | undefined)?.signal);
       },
       openReadable: async (opts) => {
         const source = await this.sharedLiveSourceFor(sn, opts ?? {}, true);
-        return openReadableFromConsumer(this.attachUnlessAborted(source, opts?.signal), opts);
+        return openReadableFromConsumer(attachUnlessAborted(source, opts?.signal), opts);
       },
       recordFragments: (opts) => this.recordFragments(sn, opts),
       talkback: (opts) => this.openTalkback(sn, opts),
@@ -1223,23 +1191,6 @@ export class P2PCommandRouter {
    */
 
   /**
-   * Attach a consumer, unless the caller has already abandoned the call.
-   *
-   * The acquisition it just waited through can outlast the caller's interest, and a consumer attached for
-   * somebody who has gone keeps the pull warm for nobody. Detaching immediately gives the pull back, which
-   * lets it linger and fall away if this was the only thing holding it, and leaves it untouched if it was
-   * not.
-   */
-  private attachUnlessAborted(source: SharedLiveSource, signal?: AbortSignal): Consumer {
-    const consumer = source.attach();
-    if (signal?.aborted) {
-      consumer.detach();
-      signal.throwIfAborted();
-    }
-    return consumer;
-  }
-
-  /**
    * Dispose one cached live source and forget it, so the next acquisition builds a fresh one. Its claim
    * on a session goes with it, and a media session opened for this source alone is closed: nothing else
    * can reach that connection, so leaving it open would hold a socket and a station keepalive for a
@@ -1285,7 +1236,7 @@ export class P2PCommandRouter {
   }
 
   /**
-   * Drop everything that was riding a station's session, preserving independent media sessions, and report it closed.
+   * Drop everything that was riding a station's session, and report the station closed.
    *
    * A live source holds the `P2PSession` it was BUILT with and never re-resolves it, so one left cached
    * past its session is handed back to the next viewer over a dead connection: it answers the retained
@@ -1303,7 +1254,6 @@ export class P2PCommandRouter {
     for (const [key, owner] of [...this.liveSessionKeys]) {
       if (owner !== stationSn) continue;
       this.dropLiveSource(key);
-      this.liveSessionKeys.delete(key);
     }
     for (const [key, talk] of this.talkbacks) {
       if (key.startsWith(`${stationSn}:`)) {

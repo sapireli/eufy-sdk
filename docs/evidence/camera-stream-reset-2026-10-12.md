@@ -53,6 +53,7 @@ The original host adapter fails the exact-serial safety regression by attempting
 to close the shared base connection; the candidate delegates camera recovery
 without prefix iteration. Intentional station-wide peer-policy transitions retain
 a separately named host operation. Seven focused host adapter/policy tests pass.
+
 ## Controlled live ownership checkpoint
 
 The integrating host staged source `d711f98e8f584d14e8685a322cb4784abddc7b01`

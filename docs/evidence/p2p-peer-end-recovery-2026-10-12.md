@@ -104,6 +104,7 @@ in 235 files passed**, as did typecheck, build and diff whitespace validation.
 Combined candidate bundle SHA-256 (END changes plus the separate ownership
 companion 55d3fea):
 `48372212a4e16a45fd2601febc5239e21f503339303ad975e79aca78583cddb5`.
+
 ## Deployed natural-END verification
 
 The combined candidate was deployed unchanged, SHA-256 above, as runtime PID
@@ -122,15 +123,15 @@ packet. That connection had received tens of thousands of video datagrams; its
 last VIDEO before END arrived at 19:30:50.107804508. No further outgoing DATA
 commands were observed on the ended connection after END.
 
-| Boundary | UTC | Elapsed from physical END |
-| --- | --- | ---: |
-| Incoming valid END | 19:30:50.149400431 | 0 ms |
-| Bridge stopped journal entry | 19:30:50.169291 | 19.890569 ms |
-| Bridge feed-ended/reopening journal entry | 19:30:50.175066 | 25.665569 ms |
-| New peer CAM_ID on replacement connection | 19:30:52.602102675 | 2,452.702244 ms |
-| New outer 1700 media start | 19:30:52.908975601 | 2,759.575170 ms |
-| First VIDEO on replacement connection | 19:30:53.028899084 | **2,879.498653 ms** |
-| Bridge reports streaming again | 19:30:53.162833 | 3,013.432569 ms |
+| Boundary                                  | UTC                | Elapsed from physical END |
+| ----------------------------------------- | ------------------ | ------------------------: |
+| Incoming valid END                        | 19:30:50.149400431 |                      0 ms |
+| Bridge stopped journal entry              | 19:30:50.169291    |              19.890569 ms |
+| Bridge feed-ended/reopening journal entry | 19:30:50.175066    |              25.665569 ms |
+| New peer CAM_ID on replacement connection | 19:30:52.602102675 |           2,452.702244 ms |
+| New outer 1700 media start                | 19:30:52.908975601 |           2,759.575170 ms |
+| First VIDEO on replacement connection     | 19:30:53.028899084 |       **2,879.498653 ms** |
+| Bridge reports streaming again            | 19:30:53.162833    |           3,013.432569 ms |
 
 Journal timing includes host packet delivery, SDK/bridge work and logging; it is
 not an independently instrumented SDK close-call timestamp. There was one late
@@ -167,8 +168,8 @@ peak-memory improvement is claimed.
 
 Private immutable provenance:
 
-| Artifact | SHA-256 |
-| --- | --- |
+| Artifact                      | SHA-256                                                            |
+| ----------------------------- | ------------------------------------------------------------------ |
 | `end-candidate-nic-600.jsonl` | `2ce9fb1504ce2b061181e69c496a4029b29bf71e07183cd04ffb14e63e490c43` |
 | `end-candidate-journal.jsonl` | `fd866edb9526ecaaafc418c952a5a51983dd04a7b5c4deb09bda02fed28cc7fb` |
 

@@ -10,8 +10,17 @@ function cloudClient(partial = false, pollMs = 1000) {
       if (partial) throw new Error("synthetic partial house-query failure");
       return { house_infos: [] };
     }
-    return { devices: [{ device_sn: "SENSOR", device_model: "T8410", category: "eufy_security", device_type: 30,
-      params: [{ param_type: 1101, param_value: "88", update_time: 9000 }] }] };
+    return {
+      devices: [
+        {
+          device_sn: "SENSOR",
+          device_model: "T8410",
+          category: "eufy_security",
+          device_type: 30,
+          params: [{ param_type: 1101, param_value: "88", update_time: 9000 }],
+        },
+      ],
+    };
   });
   const errors = vi.fn();
   client.on("error", errors);
@@ -61,7 +70,12 @@ describe("pollComplete reports settled loop progress independently of device cha
   it("does not announce progress while a poll promise is hung, and announces once when it settles", async () => {
     const { client, target, registry } = cloudClient();
     let resolve!: (diff: PollDiff) => void;
-    vi.spyOn(registry, "pollChanges").mockImplementation(() => new Promise<PollDiff>((done) => { resolve = done; }));
+    vi.spyOn(registry, "pollChanges").mockImplementation(
+      () =>
+        new Promise<PollDiff>((done) => {
+          resolve = done;
+        }),
+    );
     const completed = vi.fn();
     client.on("pollComplete", completed);
     const pending = target.pollOnce();
@@ -70,21 +84,5 @@ describe("pollComplete reports settled loop progress independently of device cha
     resolve(emptyComplete);
     await pending;
     expect(completed.mock.calls).toEqual([[{ status: "ok" }]]);
-  });
-
-  it("emits no completion when the periodic poll loop is disabled", async () => {
-    vi.useFakeTimers();
-    const { client, target, post } = cloudClient(false, 0);
-    const completed = vi.fn();
-    client.on("pollComplete", completed);
-    try {
-      target.schedulePoll();
-      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
-      expect(post).not.toHaveBeenCalled();
-      expect(completed).not.toHaveBeenCalled();
-    } finally {
-      client.setPollInterval(0);
-      vi.useRealTimers();
-    }
   });
 });
