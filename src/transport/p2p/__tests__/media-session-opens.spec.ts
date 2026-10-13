@@ -263,4 +263,11 @@ describe("a second live camera on a claimed station session", () => {
       await r.closeAll();
       expect(manager.entries.size).toBe(0);
     });
+  it("returns false without opening a source for an unknown or inactive camera", async () => {
+    const r = router();
+    expect(await r.resetCameraStream("UNKNOWN")).toBe(false);
+    expect(await r.resetCameraStream(CAM_A)).toBe(false);
+    expect(built).toHaveLength(0);
+    expect(sources(r).size).toBe(0);
+  });
 });

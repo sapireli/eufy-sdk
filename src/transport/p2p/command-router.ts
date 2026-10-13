@@ -402,28 +402,13 @@ export class P2PCommandRouter {
     return dev ? stationOf(dev) : sn;
   }
 
-  /**
-   * Retire only this camera's cached media source. Dedicated media connections are closed;
-   * a shared station/control connection is preserved while its sibling sources remain usable.
-   * Returns false when no loaded camera source exists, without opening a connection.
-   * Does not cancel concurrent acquisitions or close a base/control connection.
-   */
+  /** Drop this camera's cached media source; return false when no source is cached. */
   async resetCameraStream(sn: string): Promise<boolean> {
-    const device = this.recordFor(sn);
     const address = stationChannels(this.deps.listDevices()).get(sn);
-    if (!device || !address || !("channel" in address)) return false;
-    const station = stationOf(device);
-    const key = `${station}:${address.channel}`;
-    const source = this.liveSources.get(key);
-    if (!source) return false;
-    const owner = this.liveSessionKeys.get(key);
-    this.liveSessionKeys.delete(key);
-    this.liveSources.delete(key);
-    this.liveSourceOpts.delete(key);
-    source.dispose();
-    if (owner !== undefined && P2PCommandRouter.isMediaSessionKey(owner)) {
-      await this.manager.close(owner);
-    }
+    if (!address || !("channel" in address)) return false;
+    const key = `${this.stationKeyOf(sn)}:${address.channel}`;
+    if (!this.liveSources.has(key)) return false;
+    this.dropLiveSource(key);
     return true;
   }
 
