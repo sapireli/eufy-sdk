@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Command } from "../../core/contracts.js";
+import type { Command, MediaProvider } from "../../core/contracts.js";
 import type { EufyDevice } from "../../core/types.js";
 import { DeviceType } from "../../model/device-types.js";
 import type { RtcRoute } from "../../transport/rtc/command-router.js";
@@ -21,7 +21,9 @@ function fixture(stationType: number = DeviceType.STATION_9000) {
   const internals = client as unknown as {
     registry: { list(): EufyDevice[]; devices: EufyDevice[] };
     rtc: { dispatchCommand(route: RtcRoute, cmd: Command): Promise<void>; mediaProviderFor(route: unknown): unknown };
-    p2p: { dispatchCommand(sn: string, cmd: Command): Promise<void> };
+    p2p: { dispatchCommand(sn: string, cmd: Command): Promise<void>; mediaProviderFor(sn: string): MediaProvider };
+    powerOverrides: Map<string, "always-on" | "battery">;
+    mediaProviderFor(sn: string): MediaProvider;
     routeCommand(sn: string, cmd: Command): Promise<void>;
     rtcMediaFor(sn: string): unknown;
   };
@@ -164,6 +166,28 @@ describe("station-owned RTC command routing", () => {
     expect(internals.rtcMediaFor(HUB)).toBeUndefined();
     const other = fixture(DeviceType.HB3);
     expect(other.internals.rtcMediaFor(CAMERA)).toBeUndefined();
+  });
+
+  it("keeps RTC media routing and forwards changes to the local power claim", async () => {
+    const { internals } = fixture();
+    const snapshot = vi.fn(async (_opts: Parameters<MediaProvider["snapshotLive"]>[0]) => ({
+      jpeg: Buffer.alloc(0),
+      width: 1,
+      height: 1,
+    }));
+    const rtc = vi.spyOn(internals.rtc, "mediaProviderFor").mockReturnValue({ snapshotLive: snapshot });
+    const p2p = vi.spyOn(internals.p2p, "mediaProviderFor").mockImplementation(() => {
+      throw new Error("P2P media must not be selected for this RTC camera");
+    });
+    internals.powerOverrides.set(CAMERA, "always-on");
+    const media = internals.mediaProviderFor(CAMERA);
+    await media.snapshotLive({ powered: "battery" });
+    expect(snapshot).toHaveBeenLastCalledWith({ powered: "wired" });
+    internals.powerOverrides.set(CAMERA, "battery");
+    await media.snapshotLive({ powered: "wired" });
+    expect(snapshot).toHaveBeenLastCalledWith({ powered: "battery" });
+    expect(rtc).toHaveBeenCalledOnce();
+    expect(p2p).not.toHaveBeenCalled();
   });
 
   it("serves no RTC media for a camera attached to a T8N00, whose route carries commands only", () => {

@@ -58,6 +58,8 @@ import {
   type CommandSink,
   type Ff09SettingsReader,
   type MediaProvider,
+  type PowerOverride,
+  type PowerOverrideController,
   type TuyaDpInbound,
 } from "../core/contracts.js";
 import { noopLogger } from "../core/logger.js";
@@ -70,6 +72,7 @@ import { type AvailabilityObservation, type EufyDevice, type RealtimeTransport }
 import { Timer } from "../core/util.js";
 import {
   Device,
+  cameraPowerTier,
   resolveDevice,
   detectionName,
   type Capability,
@@ -84,7 +87,6 @@ import {
   isStation9000,
   isTuyaVacuum,
 } from "../model/device-family.js";
-import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import type {
   EufyMegaOptions,
@@ -310,6 +312,8 @@ export class EufyMega extends EventEmitter {
   private readonly prewarmEvents: ReadonlySet<string>;
   /** Station power tiers a pre-warm may open (resolved once from the options). */
   private readonly prewarmTiers: ReadonlySet<PowerTier>;
+  /** Per-device local operating-power claims, independent of device-reported charging state. */
+  private readonly powerOverrides = new Map<string, Exclude<PowerOverride, "auto">>();
   /** Transport-side owner of the P2P sessions + all wire senders. */
   private readonly p2p: P2PCommandRouter;
   /** Transport-side owner of the T9000 station sessions (sibling of {@link p2p}). */
@@ -344,6 +348,10 @@ export class EufyMega extends EventEmitter {
     this.opts = opts;
     this.prewarmEvents = new Set(opts.prewarmEvents ?? []);
     this.prewarmTiers = new Set(opts.prewarmTiers ?? DEFAULT_PREWARM_TIERS);
+    for (const [sn, override] of Object.entries(opts.powerOverrides ?? {})) {
+      if (override !== "always-on" && override !== "battery") throw new TypeError(`invalid power override for ${sn}`);
+      this.powerOverrides.set(sn, override);
+    }
     this.mega = new MegaHttpClient(opts);
     if (opts.storedSnapshotCache !== false) {
       this.storedImages = new StoredImageCache(
@@ -372,6 +380,7 @@ export class EufyMega extends EventEmitter {
       poweredFor: (parentSn) => this.stationPower(parentSn),
       sessionIdle: { batteryIdleMs: opts.p2pIdleMs },
       localAddresses: opts.localAddresses,
+      acceptP2PPeer: opts.acceptP2PPeer,
       noBroadcast: opts.noBroadcast,
       listDevices: () => this.registry.list(),
       ensureDevices: async () => {
@@ -669,6 +678,7 @@ export class EufyMega extends EventEmitter {
         this.mediaProviderFor(sn),
         this.ff09SettingsReaderFor(sn, ctx),
         rawDpCodec,
+        this.powerOverrideFor(sn),
       );
       this.boundParamIds.set(sn, new Set([...(this.boundParamIds.get(sn) ?? []), ...ctx.paramIds]));
       this.emit("deviceState", this.deviceState(sn));
@@ -1195,7 +1205,16 @@ export class EufyMega extends EventEmitter {
    * current. With nothing retained the refusal stands.
    */
   private mediaProviderFor(sn: string): MediaProvider {
-    const media = this.rtcMediaFor(sn) ?? this.p2p.mediaProviderFor(sn);
+    const source = this.rtcMediaFor(sn) ?? this.p2p.mediaProviderFor(sn);
+    const policy = () => (this.powerOverrides.has(sn) ? { powered: this.devicePower(sn) } : {});
+    const media: MediaProvider = {
+      ...source,
+      snapshotLive: (opts) => source.snapshotLive({ ...opts, ...policy() }),
+      live: (opts) => source.live({ ...opts, ...policy() }),
+      openReadable: source.openReadable ? (opts) => source.openReadable!({ ...opts, ...policy() }) : undefined,
+      recordFragments: source.recordFragments ? (opts) => source.recordFragments!({ ...opts, ...policy() }) : undefined,
+      talkback: source.talkback ? (opts) => source.talkback!({ ...opts, ...policy() }) : undefined,
+    };
     const cache = this.storedImages;
     if (!cache) return media;
     const retainedStill = () => {
@@ -1421,6 +1440,7 @@ export class EufyMega extends EventEmitter {
       this.mediaProviderFor(sn),
       this.ff09SettingsReaderFor(sn, ctx),
       rawDpCodec,
+      this.powerOverrideFor(sn),
     );
     this.boundParamIds.set(sn, ctx.paramIds);
     if (this.opts.autoRealtime !== false) {
@@ -1655,6 +1675,7 @@ export class EufyMega extends EventEmitter {
    * not skip it; it reports its own failures and never rejects.
    */
   private async pollOnce(): Promise<void> {
+    let status: EufyMegaEventMap["pollComplete"][0]["status"] = "error";
     try {
       const diff = await this.registry.pollChanges();
       for (const dev of diff.added) this.emit("deviceAdded", dev);
@@ -1665,8 +1686,11 @@ export class EufyMega extends EventEmitter {
           this.emitSemantic(out.event, out.payload, { refresh: out.refresh });
       for (const dev of diff.reported) this.emit("deviceState", this.stateOf(dev));
       for (const change of diff.params) await this.widenCapabilities(change.deviceSn);
+      status = diff.complete ? "ok" : "partial";
     } catch (e) {
       this.reportError(e);
+    } finally {
+      this.emit("pollComplete", { status });
     }
     await this.readTuyaDevices();
   }
@@ -1799,6 +1823,7 @@ export class EufyMega extends EventEmitter {
         this.mediaProviderFor(sn),
         this.ff09SettingsReaderFor(sn, ctx),
         rawDpCodec,
+        this.powerOverrideFor(sn),
       );
       this.boundParamIds.set(sn, ctx.paramIds);
       this.emit("deviceCapabilities", { deviceSn: sn, gained, capabilities: [...dev.capabilities] });
@@ -1867,26 +1892,57 @@ export class EufyMega extends EventEmitter {
     return readiness;
   }
 
-  /**
-   * A station's power tier for the P2P lifecycle: a HomeBase/station is `"wired"` (persistent); a
-   * standalone device is `"battery"` iff its resolved capabilities include `battery` and it is not a
-   * confirmed mains-only camera model, else `"wired"`.
-   * Keyed on the STATION's own power, never a child's (a battery cam attached to a wired HomeBase draws
-   * from the base's persistent session). Reads capabilities on the client side — no model type leaks to
-   * transport (the router only ever sees the `"wired"|"battery"` string).
-   */
-  private stationPower(parentSn: string): PowerTier {
-    const d = this.registry.list().find((x) => x.sn === parentSn);
+  /** Read or replace one device's local operating-power claim. */
+  private powerOverrideFor(sn: string): PowerOverrideController {
+    return {
+      getOverride: () => this.powerOverrides.get(sn) ?? "auto",
+      setOverride: (override) => {
+        if (override !== "auto" && override !== "always-on" && override !== "battery")
+          throw new TypeError("power override must be auto, always-on, or battery");
+        if ((this.powerOverrides.get(sn) ?? "auto") === override) return;
+        if (override === "auto") this.powerOverrides.delete(sn);
+        else this.powerOverrides.set(sn, override);
+        const after = this.devicePower(sn);
+        this.p2p.updatePowerTier(sn, after);
+        const device = this.registry.list().find((entry) => entry.sn === sn);
+        if (
+          after === "wired" &&
+          this.opts.autoRealtime !== false &&
+          this.mega.loggedIn &&
+          device &&
+          P2PCommandRouter.claimsDevice(device) &&
+          this.p2p.stationKeyOf(sn) === sn
+        )
+          void this.p2p.ensureStation(sn).catch((error) => this.reportError(error));
+      },
+    };
+  }
+
+  /** Operating tier of one device, with an explicit local claim taking precedence over model facts. */
+  private devicePower(sn: string): PowerTier {
+    const override = this.powerOverrides.get(sn);
+    if (override) return override === "always-on" ? "wired" : "battery";
+    const d = this.registry.list().find((x) => x.sn === sn);
     if (!d) return "wired";
     if (d.deviceClass === "homebase") return "wired";
-    const raw = (d.raw ?? {}) as Record<string, any>;
+    const raw = (d.raw ?? {}) as Record<string, unknown>;
     const caps = resolveDevice({
-      deviceType: typeof raw.device_type === "number" ? (raw.device_type as number) : undefined,
+      deviceType: typeof raw.device_type === "number" ? raw.device_type : undefined,
       model: d.model,
       category: d.category,
       params: d.params ?? {},
     }).capabilities;
     return cameraPowerTier(d.model, new Set(caps));
+  }
+
+  /** A P2P session follows its station's power, including a standalone device's local claim. */
+  private stationPower(parentSn: string): PowerTier {
+    return this.devicePower(parentSn);
+  }
+
+  /** Retire one camera's media source and dedicated connection, preserving sibling station streams. */
+  async resetCameraStream(deviceSn: string): Promise<boolean> {
+    return this.p2p.resetCameraStream(deviceSn);
   }
 
   /**
@@ -1900,11 +1956,8 @@ export class EufyMega extends EventEmitter {
    * must be one {@link EufyMegaOptions.prewarmTiers} allows.
    *
    * The tier is resolved for the STATION whose session would open, which is why an attached camera is
-   * judged by its base — {@link P2PCommandRouter.stationKeyOf} is the single source of that mapping, and
-   * {@link stationPower} of the tier. A station with no record of its own is declined rather than
-   * pre-warmed: {@link stationPower} answers `"wired"` for one it cannot find, because the tier it feeds
-   * the session lifecycle must always be an answer — and taking that answer here is how a battery camera
-   * gets pre-warmed under a `"wired"`-only opt-in.
+   * judged by its base. {@link P2PCommandRouter.stationKeyOf} resolves that mapping, and
+   * {@link stationPower} resolves the tier. A station with no account record is declined.
    *
    * Best-effort and unawaited: a pre-warm nobody uses must cost the caller nothing, so a failed open
    * surfaces on `error` like any other background transport failure.

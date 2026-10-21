@@ -798,6 +798,11 @@ export interface AbortableCall {
 
 export interface SharedSourceHints {
   /**
+   * Requested live stream type. Meaning is device-specific; absent preserves the transport's default.
+   * The first call opening the shared pull fixes this value for every egress joining it.
+   */
+  streamType?: 1 | 2;
+  /**
    * Power source, a runtime device fact (`"battery"` incl. solar, or `"wired"`) — never a device-family
    * trait. `"wired"` streams unbounded; `"battery"` bounds a continuous stream to a budget, after which
    * the handle's `budget` notice offers an extension.
@@ -812,6 +817,15 @@ export interface SharedSourceHints {
    * the camera capture just before this" only for a pull something already opened.
    */
   preBufferSeconds?: number;
+}
+
+/** A local operating-power claim; `auto` returns to the SDK's evidence-based policy. */
+export type PowerOverride = "auto" | "always-on" | "battery";
+
+/** Read or replace one device's local operating-power claim without writing to the device. */
+export interface PowerOverrideController {
+  getOverride(): PowerOverride;
+  setOverride(override: PowerOverride): void;
 }
 
 /**

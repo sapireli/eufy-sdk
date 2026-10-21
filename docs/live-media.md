@@ -25,10 +25,24 @@ Consequences a host should rely on:
 
 - **Cheap re-use.** The motion-thumbnail → tap-to-watch flow attaches a snapshot then a live view
   within seconds; the second attach re-uses the warm session, no second pull.
-- **Late joiners are primed instantly.** The last keyframe (IDR) is cached and replayed to a new
-  consumer on attach — no waiting a full GOP for the next keyframe before the picture appears.
+- **Late joiners wait for a live keyframe.** After video subscription, delivery starts at the next keyframe and continues
+  with its dependent pictures. A cached keyframe alone cannot supply the intervening references.
 - **Linger, then stop.** When the last consumer detaches the source lingers briefly (so a quick
   re-attach reuses it) and then stops the pull. You don't manage the pull; you manage your consumer.
+
+`streamType: 1 | 2` selects the live start's `streamtype` field. Omission keeps the P2P default
+of 2 for both HomeBase-attached cameras and cameras with their own session. The first opener fixes
+the choice for the shared pull; later consumers join it, and conflicting hints are logged and ignored.
+Retries and session recovery retain the choice.
+For a camera with its own session, 2 is the only verified value; requesting 1 rejects the live call.
+
+```ts
+const stream = await cam?.live?.({ streamType: 2 });
+```
+
+The values have device-specific effects. In a controlled test on a HomeBase-attached T8214, changing
+only this field from 2 to 1 made motion switch the encoded split view to picture-in-picture;
+2 retained the split view through motion. This does not establish the values' meaning on other cameras.
 
 ## Several cameras behind one station
 
@@ -151,7 +165,7 @@ first announcements of a session can move from the header's answer to the parame
 having reconfigured; a caller that rebuilds on a difference rebuilds once there.
 
 The announcement is per consumer, against what **that** consumer was last given. A consumer joining
-mid-session is primed with a cached keyframe it did not witness arriving, and one that crosses its queue
+mid-session starts at its next live keyframe, and one that crosses its queue
 bound resynchronises onto a later IDR having skipped the frame the change arrived on — so both are told,
 even though the shared source saw the change once.
 
@@ -344,12 +358,10 @@ const shot = await cam.snapshotLive?.(); // { jpeg, width, height }
 the stream's frame header, so they cannot disagree with the bytes. (Some cameras reconfigure resolution
 inside one short burst, which is exactly when the header and the encoded still part company.)
 
-If the shared source already has a cached keyframe (a live view or another consumer is warm),
-`snapshotLive` decodes that keyframe directly — **no second pull**. Only if nothing is warm does it
-briefly attach, wait for a clean keyframe, decode, and detach. (The JPEG decode itself uses ffmpeg as
-an optional convenience sink — resolved on `PATH`, or set `ffmpegPath` on the client to name the binary
-you ship; the raw keyframe bytes are always available dependency-free via `openReadable` / the event
-stream.)
+`snapshotLive` reuses a warm pull without opening a second session. It waits for live keyframes,
+collects its decode burst, and detaches before decoding. The JPEG decode uses ffmpeg as an optional
+convenience sink, resolved on `PATH` or configured with `ffmpegPath`. Raw frames remain available
+through `openReadable` and the event stream.
 
 ## Recordings stored on a HomeBase 2
 
