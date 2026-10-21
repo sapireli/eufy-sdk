@@ -740,10 +740,9 @@ export interface LiveStreamConsumer extends LiveStreamHandle {
    * consumer receives, so a consumer holding media it has not been told the configuration of is not a state
    * it can reach.
    *
-   * Per consumer, against what THIS consumer was last given: a consumer that joins mid-session is primed
-   * with a cached keyframe it did not witness arriving, and one that crosses its bound resynchronises onto
-   * a later IDR having skipped the frame the source saw the change on. Announcing what the source saw
-   * would leave both holding an encoder built for media they never received.
+   * Per consumer, against what this consumer was last given: a mid-session join begins at its next live
+   * keyframe, and a consumer crossing its queue bound resynchronises onto a later IDR. Each receives
+   * the configuration of the media it is delivered, even when another consumer has already seen it.
    *
    * Only a consumer announces this, never a bare {@link LiveStreamHandle}: it is read from the parameter
    * sets a shared source watches every frame for, which the raw pull underneath it does not do. That is
@@ -803,6 +802,11 @@ export interface MediaSourceSelection {
 
 export interface SharedSourceHints {
   /**
+   * Requested live stream type. Meaning is device-specific; absent preserves the transport's default.
+   * The first call opening the shared pull fixes this value for every egress joining it.
+   */
+  streamType?: 1 | 2;
+  /**
    * Power source, a runtime device fact (`"battery"` incl. solar, or `"wired"`) — never a device-family
    * trait. `"wired"` streams unbounded; `"battery"` bounds a continuous stream to a budget, after which
    * the handle's `budget` notice offers an extension.
@@ -817,6 +821,15 @@ export interface SharedSourceHints {
    * the camera capture just before this" only for a pull something already opened.
    */
   preBufferSeconds?: number;
+}
+
+/** A local operating-power claim; `auto` returns to the SDK's evidence-based policy. */
+export type PowerOverride = "auto" | "always-on" | "battery";
+
+/** Read or replace one device's local operating-power claim without writing to the device. */
+export interface PowerOverrideController {
+  getOverride(): PowerOverride;
+  setOverride(override: PowerOverride): void;
 }
 
 /**

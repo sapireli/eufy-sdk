@@ -189,6 +189,7 @@ export interface SharedLiveOpts extends SharedSourceHints, AbortableCall {
  * report members that were never a shared-source concern as "ignored".
  */
 const SHARED_LIVE_OPT_KEYS = [
+  "streamType",
   "eccPrivateKey",
   "keepAliveMs",
   "lingerMs",
@@ -263,6 +264,8 @@ export interface P2PRouterDeps {
   sessionIdle?: Pick<SessionManagerOpts, "batteryIdleMs">;
   /** LAN address overrides for direct P2P, keyed by parent-station serial (host or host:port). */
   localAddresses?: Record<string, string>;
+  /** Host decision on a station's P2P peer candidate. */
+  acceptP2PPeer?: (stationSn: string, peer: { readonly host: string; readonly port: number }) => boolean;
   /** Suppress the `255.255.255.255` local-lookup broadcast; cloud lookup and a known LAN address still run. */
   noBroadcast?: boolean;
 }
@@ -276,6 +279,8 @@ export class P2PCommandRouter {
   private readonly liveSources = new Map<string, SharedLiveSource>();
   /** The options each live source was built from, so a later caller's conflicting ones can be reported. */
   private readonly liveSourceOpts = new Map<string, SharedLiveOpts>();
+  /** Latest power-policy revision per device, so a claim changed during a cold open wins over its old options. */
+  private readonly powerUpdates = new Map<string, { revision: number; tier: PowerTier }>();
   /**
    * The session each live source pulls over — the station's own serial, or the source's own media
    * session key.
@@ -402,6 +407,32 @@ export class P2PCommandRouter {
     return dev ? stationOf(dev) : sn;
   }
 
+  /** Apply a changed operating power tier to open media and standalone session idle timers. */
+  updatePowerTier(sn: string, tier: PowerTier): void {
+    this.powerUpdates.set(sn, { revision: (this.powerUpdates.get(sn)?.revision ?? 0) + 1, tier });
+    const dev = this.recordFor(sn);
+    if (!dev) return;
+    const station = stationOf(dev);
+    const address = stationChannels(this.deps.listDevices()).get(sn);
+    if (address && "channel" in address) {
+      const key = `${station}:${address.channel}`;
+      this.liveSources.get(key)?.setPowerTier(tier);
+      const opts = this.liveSourceOpts.get(key);
+      if (opts) this.liveSourceOpts.set(key, { ...opts, powered: tier });
+    }
+    if (station === sn) this.manager.refreshPower(station);
+  }
+
+  /** Drop this camera's cached media source; return false when no source is cached. */
+  async resetCameraStream(sn: string): Promise<boolean> {
+    const address = stationChannels(this.deps.listDevices()).get(sn);
+    if (!address || !("channel" in address)) return false;
+    const key = `${this.stationKeyOf(sn)}:${address.channel}`;
+    if (!this.liveSources.has(key)) return false;
+    this.dropLiveSource(key);
+    return true;
+  }
+
   /** Reset only a standalone device's session; an attached device must not close its shared HomeBase. */
   async resetStandaloneSession(sn: string): Promise<void> {
     const device = this.recordFor(sn);
@@ -525,11 +556,13 @@ export class P2PCommandRouter {
   ): P2PSession {
     const conn = (raw?.p2p_conn ?? raw?.app_conn) as string | undefined;
     const adminUserId = ((raw?.member as any)?.admin_user_id as string) || this.deps.mega.auth?.userId || "";
+    const acceptP2PPeer = this.deps.acceptP2PPeer;
     const session: P2PSession = new P2PSession({
       stationSn,
       p2pDid: did,
       cloudAddresses: conn ? decodeP2PCloudIPs(conn) : undefined,
       localAddress,
+      acceptPeer: acceptP2PPeer ? (peer) => acceptP2PPeer(stationSn, peer) : undefined,
       dskKey,
       noBroadcast: this.deps.noBroadcast,
       resolveCipherKey: (cipherId: number) => this.cipherKeysFor(session, cipherId, adminUserId, stationSn),
@@ -738,7 +771,7 @@ export class P2PCommandRouter {
    * A {@link MediaProvider} bound to one serial — resolves the session then calls `p2p/media`.
    *
    * Every live egress here is a consumer of the SAME shared pull, so N `live()` calls collapse to one
-   * PPCS session and a live snapshot against a warm, keyframe-primed source costs no extra pull at all; a
+   * PPCS session and a live snapshot against a warm shared source costs no extra pull at all; a
    * cold source warms one and waits for a clean keyframe. Each shared egress passes its complete options
    * through because any of them may create the source, whose power and retention hints are fixed for
    * everyone who joins later. The bounded {@link MediaProvider.record} clip is the exception: it opens its
@@ -1003,11 +1036,19 @@ export class P2PCommandRouter {
     opts: SharedLiveOpts = {},
     mayOpenOwnSession = false,
   ): Promise<SharedLiveSource> {
+    const powerRevision = this.powerUpdates.get(sn)?.revision ?? 0;
+    const currentOpts = (): SharedLiveOpts => {
+      const update = this.powerUpdates.get(sn);
+      return update && update.revision !== powerRevision ? { ...opts, powered: update.tier } : opts;
+    };
     const { session, parentSn, channel, accountId, homeBaseAttached } = await this.resolveSession(sn, {
       waitLevel2: "soft",
       requireLevel2ForAttached: true,
       signal: opts.signal,
     });
+    if (!homeBaseAttached && opts.streamType === 1) {
+      throw new RangeError("streamType 1 is unverified for own-session cameras");
+    }
     const key = `${parentSn}:${channel}`;
     let source = this.liveSources.get(key);
     if (source && source.state === "stopped") {
@@ -1031,22 +1072,24 @@ export class P2PCommandRouter {
         this.liveSessionKeys.delete(key);
         throw error;
       }
+      const sourceOpts = currentOpts();
       source = new SharedLiveSource({
         makeStream: (ctx) =>
           new LiveStream(held.session, {
             channel,
             accountId,
             homeBaseAttached,
-            eccPrivateKey: opts.eccPrivateKey,
-            keepAliveMs: opts.keepAliveMs,
+            streamType: sourceOpts.streamType,
+            eccPrivateKey: sourceOpts.eccPrivateKey,
+            keepAliveMs: sourceOpts.keepAliveMs,
             reassertWanted: ctx.reassertWanted,
             logger,
           }),
-        lingerMs: opts.lingerMs,
-        preBufferSeconds: opts.preBufferSeconds,
-        powered: opts.powered,
-        batteryBudgetMs: opts.batteryBudgetMs,
-        budgetGraceMs: opts.budgetGraceMs,
+        lingerMs: sourceOpts.lingerMs,
+        preBufferSeconds: sourceOpts.preBufferSeconds,
+        powered: sourceOpts.powered,
+        batteryBudgetMs: sourceOpts.batteryBudgetMs,
+        budgetGraceMs: sourceOpts.budgetGraceMs,
         logger,
         label: key,
         onActive: () => this.manager.retain(sessionKey),
@@ -1056,10 +1099,10 @@ export class P2PCommandRouter {
         onSessionUnreachable: () => this.replaceUnreachableSession(sn, key, held),
       });
       this.liveSources.set(key, source);
-      this.liveSourceOpts.set(key, opts);
+      this.liveSourceOpts.set(key, sourceOpts);
       return source;
     }
-    this.warnIgnoredLiveOpts(key, opts);
+    this.warnIgnoredLiveOpts(key, currentOpts());
     return source;
   }
 

@@ -29,17 +29,17 @@ function mk() {
 }
 
 describe("openReadableFromConsumer", () => {
-  it("preserves original arrival time when replaying an aged keyframe", async () => {
+  it("preserves original arrival time when delivering a queued frame", async () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
     const { source, stream } = mk();
     let reader: ReturnType<typeof openReadableFromConsumer> | undefined;
     try {
       const first = source.attach();
       const original = frame(true);
+      first.pause();
       stream().video(original);
-      first.detach();
       now.mockReturnValue(6_000);
-      reader = openReadableFromConsumer(source.attach(), { objectMode: true, arrivalTime: true });
+      reader = openReadableFromConsumer(first, { objectMode: true, arrivalTime: true });
       const received: ReceivedVideoFrame[] = [];
       reader.on("data", (value) => received.push(value));
       await new Promise((resolve) => setImmediate(resolve));

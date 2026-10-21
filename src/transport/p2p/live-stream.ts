@@ -25,6 +25,8 @@ import { AUDIO_CODECS, AUDIO_HEADER_LEN, AUDIO_TYPE_OFFSET, CMD_AUDIO_FRAME } fr
 
 const CMD_VIDEO_FRAME = 1300;
 const VIDEO_HEADER_LEN = 0x16; // 22-byte CMD_VIDEO_FRAME header before the Annex-B payload
+/** How long delivered media prevents a heartbeat-only stop decision. */
+const RECENT_MEDIA_MS = 15_000;
 const SC4 = Buffer.from([0, 0, 0, 1]);
 const SC3 = Buffer.from([0, 0, 1]);
 
@@ -84,6 +86,8 @@ export interface LiveStreamOptions {
   eccPrivateKey?: Buffer;
   /** Admin account id — required for the level-2 (`signCode 8`) media-start payload selecting a camera. */
   accountId?: string;
+  /** Live stream type sent on every start; absent keeps the session's topology-specific default. */
+  streamType?: 1 | 2;
   /**
    * Re-send the media start every N ms to hold the stream open. Defaults to
    * {@link DEFAULT_KEEPALIVE_MS}; pass `0` to disable.
@@ -142,6 +146,8 @@ export class LiveStream extends EventEmitter {
   private tracedDecodeFailures = 0;
   private tracedFirstForeignFrame = false;
   private stallTimer?: ReturnType<typeof setTimeout>;
+  /** Time of the last video or audio frame delivered from this stream's camera. */
+  private lastDeliveredMediaAt?: number;
   /**
    * The channel this stream starts, stops, traces under and matches its own abandonment on. An omitted
    * channel resolves to {@link STATION_CHANNEL} — the value the session resolves it to.
@@ -151,6 +157,11 @@ export class LiveStream extends EventEmitter {
   /** Forwards `liveStartUnacknowledged` only where it carries this stream's own channel. */
   private readonly unackedHandler = (channel: number) => {
     if (channel === this.channel) this.emit("unacknowledged");
+  };
+  /** Stops this stream once both selected-peer replies and its delivered media are silent. */
+  private readonly pathStaleHandler = () => {
+    if (this.lastDeliveredMediaAt !== undefined && Date.now() - this.lastDeliveredMediaAt < RECENT_MEDIA_MS) return;
+    this.stop();
   };
   private readonly logger: Logger;
 
@@ -175,9 +186,11 @@ export class LiveStream extends EventEmitter {
   start(): this {
     if (this.listening) return this;
     this.listening = true;
+    this.lastDeliveredMediaAt = undefined;
     this.session.on("data", this.handler);
     this.session.on("videoGap", this.videoGapHandler);
     this.session.on("liveStartUnacknowledged", this.unackedHandler);
+    this.session.on("pathStale", this.pathStaleHandler);
     this.sendStart();
     const keepAliveMs = this.opts.keepAliveMs ?? DEFAULT_KEEPALIVE_MS;
     if (keepAliveMs > 0) {
@@ -263,7 +276,10 @@ export class LiveStream extends EventEmitter {
 
   private sendStart(force?: boolean): void {
     try {
-      this.session.startLiveMedia(this.opts.channel, this.opts.accountId, this.opts.homeBaseAttached, { force });
+      this.session.startLiveMedia(this.opts.channel, this.opts.accountId, this.opts.homeBaseAttached, {
+        force,
+        streamType: this.opts.streamType,
+      });
     } catch (e) {
       // Non-fatal: the session may be mid-reconnect; the warm-up retry will re-issue the start.
       this.logger.debug(`[live] startLiveMedia deferred (session not ready): ${e instanceof Error ? e.message : e}`);
@@ -278,6 +294,7 @@ export class LiveStream extends EventEmitter {
     this.session.off("videoGap", this.videoGapHandler);
     this.awaitingKeyframeAfterGap = false;
     this.session.off("liveStartUnacknowledged", this.unackedHandler);
+    this.session.off("pathStale", this.pathStaleHandler);
     if (this.kaTimer) clearInterval(this.kaTimer);
     this.kaTimer = undefined;
     if (this.stallTimer) clearTimeout(this.stallTimer);
@@ -328,6 +345,7 @@ export class LiveStream extends EventEmitter {
           // config NAL, so they inherit the last-known codec.
           if (unit.keyframe) this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
           this.settleKeepalive();
+          this.lastDeliveredMediaAt = Date.now();
           this.emit("video", {
             sourceTimestamp: unit.sourceTimestamp,
             keyframe: unit.keyframe,
@@ -345,6 +363,7 @@ export class LiveStream extends EventEmitter {
           if (!codec) {
             this.logger.debug(`[live] dropping audio frame: unknown codec id ${codecId ?? "missing"}`);
           } else {
+            this.lastDeliveredMediaAt = Date.now();
             this.emit(
               "audio",
               codec === "aac-eld"

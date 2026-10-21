@@ -54,6 +54,28 @@ describe("captureSnapshotFromShared — decoder priming", () => {
     outcome = { stdout: JPEG };
   });
 
+  it("captures the first live keyframe on a warm source with the default collection window", async () => {
+    vi.useFakeTimers();
+    const { source, stream } = warmSource();
+    stream.video(frame(unit(SPS, PPS, IDR)));
+    const capture = captureSnapshotFromShared(source);
+    try {
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(ffmpeg.runs).toHaveLength(0);
+      stream.video(frame(unit(IDR)));
+      stream.video(frame(unit(H264.delta), { keyframe: false }));
+      await vi.advanceTimersByTimeAsync(1499);
+      expect(ffmpeg.runs).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect((await capture).jpeg).toEqual(JPEG);
+      expect(ffmpeg.runs).toHaveLength(1);
+      expect(nalTypes(decodedAt(0))).toEqual([0x67, 0x68, 0x65, 0x41]);
+    } finally {
+      source.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("primes a burst whose parameter sets were announced before it with those sets", async () => {
     const { source, stream, watcher } = warmSource();
     const announcement = frame(unit(SPS, PPS, IDR));
@@ -61,7 +83,9 @@ describe("captureSnapshotFromShared — decoder priming", () => {
     stream.video(announcement);
     stream.video(bareIdr);
 
-    const snapshot = await captureSnapshotFromShared(source, { timeoutMs: 1000 });
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, skipKeyframes: 0, collectMs: 0 });
+    stream.video(bareIdr);
+    const snapshot = await capture;
 
     expect(snapshot.jpeg).toEqual(JPEG);
     expect(nalTypes(decodedAt(0))).toEqual([0x67, 0x68, 0x65]);
@@ -74,7 +98,9 @@ describe("captureSnapshotFromShared — decoder priming", () => {
     const spsOnly = frame(unit(SPS, IDR));
     stream.video(spsOnly);
 
-    await captureSnapshotFromShared(source, { timeoutMs: 1000 });
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, skipKeyframes: 0, collectMs: 0 });
+    stream.video(spsOnly);
+    await capture;
 
     expect(nalTypes(decodedAt(0))).toEqual([0x67, 0x68, 0x67, 0x65]);
     watcher.detach();
@@ -84,7 +110,9 @@ describe("captureSnapshotFromShared — decoder priming", () => {
     const { source, stream, watcher } = warmSource();
     stream.video(frame(unit(SPS, PPS, IDR)));
 
-    await captureSnapshotFromShared(source, { timeoutMs: 1000 });
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, skipKeyframes: 0, collectMs: 0 });
+    stream.video(frame(unit(SPS, PPS, IDR)));
+    await capture;
 
     expect(nalTypes(decodedAt(0))).toEqual([0x67, 0x68, 0x67, 0x68, 0x65]);
     watcher.detach();
@@ -103,7 +131,9 @@ describe("captureSnapshotFromShared — decoder priming", () => {
     stream.video(h264Announcement);
     stream.video(h265BareIdr);
 
-    await captureSnapshotFromShared(source, { timeoutMs: 1000 });
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, skipKeyframes: 0, collectMs: 0 });
+    stream.video(h265BareIdr);
+    await capture;
 
     expect(nalTypes(decodedAt(0))).toEqual([0x26]);
     watcher.detach();
@@ -113,7 +143,9 @@ describe("captureSnapshotFromShared — decoder priming", () => {
     const { source, stream, watcher } = warmSource();
     stream.video(frame(unit(SPS, PPS, IDR)));
 
-    await captureSnapshotFromShared(source, { timeoutMs: 1000 });
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, skipKeyframes: 0, collectMs: 0 });
+    stream.video(frame(unit(SPS, PPS, IDR)));
+    await capture;
 
     expect(argvAt(0)).toContain("yuvj420p");
     expect(argvAt(0).indexOf("-pix_fmt")).toBe(argvAt(0).indexOf("yuvj420p") - 1);
@@ -133,7 +165,9 @@ describe("captureSnapshotFromShared — decoder priming", () => {
     stream.video(frame(unit(SPS, PPS, IDR), { width: 2304, height: 1296 }));
     stream.video(frame(unit(IDR), { width: 2304, height: 1296 }));
 
-    const snapshot = await captureSnapshotFromShared(source, { timeoutMs: 1000 });
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, skipKeyframes: 0, collectMs: 0 });
+    stream.video(frame(unit(IDR), { width: 2304, height: 1296 }));
+    const snapshot = await capture;
 
     expect(snapshot).toMatchObject({ width: 1280, height: 720 });
     watcher.detach();
@@ -147,7 +181,9 @@ describe("captureSnapshotFromShared — decoder priming", () => {
     const { source, stream, watcher } = warmSource();
     stream.video(frame(unit(SPS, PPS, IDR)));
 
-    const snapshot = await captureSnapshotFromShared(source, { timeoutMs: 1000 });
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, skipKeyframes: 0, collectMs: 0 });
+    stream.video(frame(unit(SPS, PPS, IDR)));
+    const snapshot = await capture;
 
     expect(snapshot).toMatchObject({ width: 800, height: 512 });
     watcher.detach();
@@ -169,7 +205,9 @@ describe("captureSnapshotFromShared — decoder priming", () => {
     const { source, stream, watcher } = warmSource();
     stream.video(frame(unit(SPS, PPS, IDR)));
 
-    expect(await captureSnapshotFromShared(source, { timeoutMs: 1000 })).toMatchObject({
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, skipKeyframes: 0, collectMs: 0 });
+    stream.video(frame(unit(SPS, PPS, IDR)));
+    expect(await capture).toMatchObject({
       width: 640,
       height: 480,
     });
@@ -185,7 +223,9 @@ describe("captureSnapshotFromShared — decoder priming", () => {
     const { source, stream, watcher } = warmSource();
     stream.video(frame(unit(SPS, PPS, IDR)));
 
-    const error = await captureSnapshotFromShared(source, { timeoutMs: 1000 }).catch((e) => e);
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, skipKeyframes: 0, collectMs: 0 });
+    stream.video(frame(unit(SPS, PPS, IDR)));
+    const error = await capture.catch((e) => e);
 
     expect(error).toBeInstanceOf(LiveSnapshotUnavailableError);
     expect(error.reason).toBe("undecodable-burst");
@@ -204,7 +244,9 @@ describe("captureSnapshotFromShared — typed reasons", () => {
     const { source, stream, watcher } = warmSource();
     stream.video(frame(unit(SPS, PPS, IDR)));
 
-    const error = await captureSnapshotFromShared(source, { timeoutMs: 1000 }).catch((e) => e);
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, skipKeyframes: 0, collectMs: 0 });
+    stream.video(frame(unit(SPS, PPS, IDR)));
+    const error = await capture.catch((e) => e);
 
     expect(error).toBeInstanceOf(LiveSnapshotUnavailableError);
     expect(error.reason).toBe("undecodable-burst");
@@ -217,7 +259,9 @@ describe("captureSnapshotFromShared — typed reasons", () => {
     const { source, stream, watcher } = warmSource();
     stream.video(frame(unit(SPS, PPS, IDR)));
 
-    const error = await captureSnapshotFromShared(source, { timeoutMs: 1000 }).catch((e) => e);
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, skipKeyframes: 0, collectMs: 0 });
+    stream.video(frame(unit(SPS, PPS, IDR)));
+    const error = await capture.catch((e) => e);
 
     expect(error).toBeInstanceOf(LiveSnapshotUnavailableError);
     expect(error.reason).toBe("decoder-unavailable");
@@ -241,7 +285,9 @@ describe("captureSnapshotFromShared — typed reasons", () => {
     const { source, stream, watcher } = warmSource();
     stream.video(frame(unit(SPS, PPS, IDR)));
 
-    const error = await captureSnapshotFromShared(source, { timeoutMs: 1000 }).catch((e) => e);
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, skipKeyframes: 0, collectMs: 0 });
+    stream.video(frame(unit(SPS, PPS, IDR)));
+    const error = await capture.catch((e) => e);
 
     expect(error.message).toContain("non-existing PPS 0 referenced");
     watcher.detach();
