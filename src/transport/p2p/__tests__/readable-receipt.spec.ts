@@ -68,7 +68,7 @@ afterEach(() => {
 });
 
 describe("original media receipt through video Readable", () => {
-  it("preserves the same aged prime receipt rather than minting delivery time or identity", async () => {
+  it("starts a reused readable at a live keyframe with its original receipt", async () => {
     const clock = clocks();
     const { source, stream } = harness();
     const original = frame();
@@ -85,12 +85,18 @@ describe("original media receipt through video Readable", () => {
     const reader = track(openReadableFromConsumer(reused, { objectMode: true, receiptMetadata: true }));
     reader.on("data", (value) => received.push(value));
     await flush();
+    expect(received).toHaveLength(0);
+    stream.video(frame(false));
+    expect(received).toHaveLength(0);
+    const live = frame();
+    stream.video(live);
+    await flush();
     expect(received).toHaveLength(1);
-    expect(received[0].frame).toBe(original);
-    expect(received[0].receipt).toBe(retained!.receipt);
-    expect(received[0].receipt.monotonicUs).toBe(1_000_000n);
-    expect(6_000_000n - received[0].receipt.monotonicUs).toBe(5_000_000n);
-    expect(received[0].receipt.sequence).toBe(1n);
+    expect(received[0].frame).toBe(live);
+    expect(received[0].receipt).not.toBe(retained!.receipt);
+    expect(received[0].receipt.monotonicUs).toBe(6_000_000n);
+    expect(6_000_000n - received[0].receipt.monotonicUs).toBe(0n);
+    expect(received[0].receipt.sequence).toBe(3n);
     expect(Object.isFrozen(received[0].receipt)).toBe(true);
     expect(Object.getOwnPropertyDescriptor(retained!, "receipt")?.writable).toBe(false);
     expect(Object.keys(retained!)).not.toContain("receipt");
