@@ -28,9 +28,18 @@ function harness(acceptPeer?: P2PSessionConfig["acceptPeer"], cloudAddress?: str
   const sent: { addr: { host: string; port: number }; type: Buffer; socket?: dgram.Socket }[] = [];
   const target = session as unknown as {
     onMessage: (message: Buffer, info: { address: string; port: number }, socket?: dgram.Socket) => void;
-    send: (addr: { host: string; port: number }, type: Buffer, payload?: Buffer, socket?: dgram.Socket) => void;
+    send: (
+      addr: { host: string; port: number },
+      type: Buffer,
+      payload?: Buffer,
+      socket?: dgram.Socket,
+      done?: () => void,
+    ) => void;
   };
-  target.send = (addr, type, _payload, socket) => sent.push({ addr, type, socket });
+  target.send = (addr, type, _payload, socket, done) => {
+    sent.push({ addr, type, socket });
+    done?.();
+  };
   return {
     session,
     sent,
