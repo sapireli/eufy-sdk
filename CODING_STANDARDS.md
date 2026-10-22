@@ -216,6 +216,12 @@ host can decide whether to show a button`. Second person (`you`, `your host`) ne
 - **No backward-compat below 1.0.** Remove speculative and dead code rather than keeping old shapes
   beside new ones.
 
+## Fork upstream workflow
+
+Before preparing or revising an upstream contribution from this fork, read
+[the upstream PR guide](docs/agents/upstream-pr-guide.md). It records evidence, validation and review
+lessons alongside the current upstream requirements.
+
 ## Agent skills
 
 ### Issue tracker
