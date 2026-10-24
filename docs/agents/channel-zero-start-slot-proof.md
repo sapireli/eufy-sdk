@@ -49,11 +49,7 @@ The raw-gap guard and maximum completed-gap metrics differ: the guard also measu
 
 The isolated worktree starts at `48e4f2f`. Only an attached channel-zero START joins the existing generated request-slot sequence. Camera channel zero remains in the frame header and authenticated body. The station sentinel 255, channel-zero STOP, nonzero channels, RSA key generation, authenticated plaintext fields, stream type, quality, and decoder paths retain their behavior. There is no topology-policy change or new API.
 
-The intended condition is:
-
-```ts
-channel === STATION_CHANNEL || (!isStart && channel === 0) ? 0 : 0x0a + (this.level2Seq & 0x7f);
-```
+The private serializer selects zero for `channel === STATION_CHANNEL || (!isStart && channel === 0)`; other attached media requests use `0x0a + (this.level2Seq & 0x7f)`.
 
 The common helper frames both START 1003 and STOP 1004. Removing the channel-zero exception unconditionally would also alter STOP framing, outside the measured candidate scope.
 
