@@ -1,6 +1,6 @@
 # Channel-zero attached START request slots
 
-The controlled candidate/original/candidate test supports correcting the attached channel-zero START request slot for the tested private-session profile. Both candidate arms completed 180 seconds; the original failed the five-second raw-silence guard. Production encoding and client validation remain pending. This is not a claim of gap-free delivery or compatibility with every firmware.
+The controlled candidate/original/candidate test supports correcting the attached channel-zero START request slot for the tested private-session profile. Both candidate arms completed 180 seconds; the original failed the five-second raw-silence guard. Validation with concurrent independent consumers remains pending. This is not a claim of gap-free delivery or compatibility with every firmware.
 
 ## Source behavior and provenance
 
@@ -18,7 +18,7 @@ Those observed native requests use the simple P-256 request profile. The candida
 
 ## Completed direct controls
 
-Each direct arm drains SDK media without bridge encoding or player workloads. Current-SDK arms use `objectMode:true, arrivalTime:true`; pre-beta supports object mode but yields the original video frame directly, without the arrival-time envelope. The observers bind raw UDP, assembled channel-zero frames, LiveStream video, and Readable object identity to the actual target source/session. The three HomeBase sources must first deliver valid frames before the exposure clock begins. Balcony is attempted but is not a readiness requirement.
+Each direct arm drains SDK media without downstream processing workloads. Current-SDK arms use `objectMode:true, arrivalTime:true`; pre-beta supports object mode but yields the original video frame directly, without the arrival-time envelope. The observers bind raw UDP, assembled channel-zero frames, LiveStream video, and Readable object identity to the actual target source/session. The three HomeBase sources must first deliver valid frames before the exposure clock begins. An independent standalone source is attempted but is not a readiness requirement.
 
 | SDK and acquisition order                     | Target role | Exposure after three HomeBase first frames | Result                                                                                                                    |
 | --------------------------------------------- | ----------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
@@ -67,7 +67,7 @@ Portable candidate bundle: `dist/index.js`, 1304516 bytes; SHA-256 `beba1361f8d0
 
 ## Controlled candidate/original/candidate result
 
-All three arms used the current SDK48 public API, the same cached session seed and cooldown procedure, the same native camera settings, and no bridge encoder or player workloads. Channel 2 was opened first and held BASE; channel 0 then used its actual private0 session. Target identities were stable within each arm and each source remained LIVE with one consumer. Raw media, assembled video, emitted LiveStream frames, and Readable frame-object identity were bound to that exact target session.
+All three arms used the current SDK48 public API, the same cached session seed and cooldown procedure, the same native camera settings, and no downstream processing workloads. Channel 2 was opened first and held BASE; channel 0 then used its actual private0 session. Target identities were stable within each arm and each source remained LIVE with one consumer. Raw media, assembled video, emitted LiveStream frames, and Readable frame-object identity were bound to that exact target session.
 
 | Arm           | Observed START slots | Exposure after all three HomeBase first frames | Matching valid frames | Maximum raw gap | Outcome           |
 | ------------- | -------------------- | ---------------------------------------------- | --------------------- | --------------- | ----------------- |
@@ -75,9 +75,9 @@ All three arms used the current SDK48 public API, the same cached session seed a
 | A, original48 | 0                    | 64.575 seconds                                 | 751                   | 5.021 seconds   | Raw-silence guard |
 | B2, candidate | 11,12,13,14          | 180.039 seconds                                | 2681                  | 3.446 seconds   | Completed         |
 
-The original arm also stopped assembled and delivered target frames: maximum valid gap 5.040 seconds. Front and Flood sibling receipts remained fresh, about 2 and 1 milliseconds old at the failure snapshot. The target source still reported LIVE with one consumer. Event-loop maximum near the original failure was 39.322 milliseconds, versus 194.249 milliseconds across that complete arm. Full-arm event-loop maxima were 168.165 milliseconds in B1 and 228.065 milliseconds in B2.
+The original arm also stopped assembled and delivered target frames: maximum valid gap 5.040 seconds. Channel-two and channel-one sibling receipts remained fresh, about 2 and 1 milliseconds old at the failure snapshot. The target source still reported LIVE with one consumer. Event-loop maximum near the original failure was 39.322 milliseconds, versus 194.249 milliseconds across that complete arm. Full-arm event-loop maxima were 168.165 milliseconds in B1 and 228.065 milliseconds in B2.
 
-B1 was close to the guard boundary: maximum Readable gap 4.980 seconds. It therefore does not demonstrate gap-free or smooth delivery. B2 naturally reissued START before first media, generating slots 11 through 14; that startup retry history is a recorded covariate. One B2 error concerned the optional Balcony source, not the required HomeBase target. The target produced all 2681 matching frames. Door and Front remained native 1600×2200 H.264. Flood changed from 2304 to 1920 pixels wide in all three arms without a quality-setting write.
+B1 was close to the guard boundary: maximum Readable gap 4.980 seconds. It therefore does not demonstrate gap-free or smooth delivery. B2 naturally reissued START before first media, generating slots 11 through 14; that startup retry history is a recorded covariate. One B2 error concerned the optional standalone source, not the required HomeBase target. The target produced all 2681 matching frames. Both attached doorbell sources remained native 1600×2200 H.264. The channel-one camera changed from 2304 to 1920 pixels wide in all three arms without a quality-setting write.
 
 START metadata came from identical read-only wrappers around actual serializer sends, not an independent NIC capture. They recorded outer command 1350, inner-command context 1003, camera channel 0, sign 8, magic 8/0, and the slot. The wrappers did not modify wire bytes or export plaintext, key or account values. The single candidate code change supplied the serialized nonzero slots; the original serialized zero.
 
@@ -90,4 +90,4 @@ These bounded reversal results support the START-slot correction for this tested
 | `original48-A.json`                                                         | `ba9602fac2d195c3b6220f06cfc7ceaab2bc70bc9a9c1afb9c55c50a2b17100f` |
 | `slot-candidate-B2.json`                                                    | `441154a04864d05fe6ece88db6c10b51891525c63fd296fc7189e8c3059f2aea` |
 
-All four hashes were independently verified locally. The runtime owner restored the original production SDK and settings and returned the bridge to PID 74318. A tracked whole-package production canary with the original encoder/client configuration is the next validation gate. No upstream PR is opened on the strength of these direct-only results.
+All four hashes were independently verified locally. The original installed SDK and configuration were restored after the direct trials. A tracked whole-package canary with concurrent independent consumers is the next validation gate. No upstream PR is opened on the strength of these direct-only results.

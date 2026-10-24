@@ -1719,6 +1719,11 @@ export class P2PSession extends EventEmitter {
    * payload}`, encrypted level-2 (AES-256-GCM, signCode 8) — the app's media-control path. The
    * camera is selected by `mChannel` (= the device's `device_channel`) AND the frame-header channel.
    */
+  /**
+   * Send attached media control sealed with the level-2 key, selecting the camera in JSON and header.
+   * START request slots follow the generated sequence independently of the camera channel. The station
+   * sentinel and channel-zero STOP use slot zero.
+   */
   private sendMediaPayloadLevel2(
     subCmd: number,
     channel: number,
@@ -1756,9 +1761,6 @@ export class P2PSession extends EventEmitter {
     });
     const body = this.encryptLevel2(Buffer.from(value, "utf-8"));
     if (!body) return;
-    // Keep the existing level-2 header and generated request-slot sequence. Camera channel zero
-    // selects a camera in the payload/header; it need not also force a START's request slot to zero.
-    // Preserve the station sentinel and channel-zero STOP framing.
     const streamId = channel === STATION_CHANNEL || (!isStart && channel === 0) ? 0 : 0x0a + (this.level2Seq & 0x7f);
     const data = Buffer.concat([
       buildCommandHeader(this.seqNumber, CMD_SET_PAYLOAD),
