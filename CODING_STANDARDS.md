@@ -222,6 +222,11 @@ Before preparing or revising an upstream contribution from this fork, read
 [the upstream PR guide](docs/agents/upstream-pr-guide.md). It records evidence, validation and review
 lessons alongside the current upstream requirements.
 
+Retain private raw artifacts and a sanitized, SDK-scoped evidence record for wire changes; the
+[channel-zero START record](docs/agents/channel-zero-start-slot-proof.md) is one example. Keep
+consumer names and deployment details out of public SDK evidence. Upstream contributions carry only
+the necessary SDK code and regression coverage, with reproducibility evidence in the commit and PR.
+
 ## Agent skills
 
 ### Issue tracker
