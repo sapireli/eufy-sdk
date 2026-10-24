@@ -1756,9 +1756,10 @@ export class P2PSession extends EventEmitter {
     });
     const body = this.encryptLevel2(Buffer.from(value, "utf-8"));
     if (!body) return;
-    // v6.0.41 level-2 media frame header: magic byte 0x08 (NOT the legacy 0x01), and a per-stream
-    // slot id at the "type" byte (channel 0 = slot 0; other cameras get an incrementing slot).
-    const streamId = channel === STATION_CHANNEL || channel === 0 ? 0 : 0x0a + (this.level2Seq & 0x7f);
+    // Keep the existing level-2 header and generated request-slot sequence. Camera channel zero
+    // selects a camera in the payload/header; it need not also force a START's request slot to zero.
+    // Preserve the station sentinel and channel-zero STOP framing.
+    const streamId = channel === STATION_CHANNEL || (!isStart && channel === 0) ? 0 : 0x0a + (this.level2Seq & 0x7f);
     const data = Buffer.concat([
       buildCommandHeader(this.seqNumber, CMD_SET_PAYLOAD),
       buildRawCommandPayload(body, channel, 8, [0x08, 0x00], streamId),
