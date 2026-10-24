@@ -1,6 +1,6 @@
 # Channel-zero attached START request slots
 
-The controlled candidate/original/candidate test supports correcting the attached channel-zero START request slot for the tested private-session profile. Both candidate arms completed 180 seconds; the original failed the five-second raw-silence guard. Validation with concurrent independent consumers remains pending. This is not a claim of gap-free delivery or compatibility with every firmware.
+The controlled candidate/original/candidate test supports correcting the attached channel-zero START request slot for the tested private-session profile. Both candidate arms completed 180 seconds; the original failed the five-second raw-silence guard. A separate integration run still reached a five-second incoming-media gap. This is not a claim of gap-free delivery or compatibility with every firmware.
 
 ## Source behavior and provenance
 
@@ -86,4 +86,20 @@ These bounded reversal results support the START-slot correction for this tested
 | `original48-A.json`                                                         | `ba9602fac2d195c3b6220f06cfc7ceaab2bc70bc9a9c1afb9c55c50a2b17100f` |
 | `slot-candidate-B2.json`                                                    | `441154a04864d05fe6ece88db6c10b51891525c63fd296fc7189e8c3059f2aea` |
 
-All four hashes were independently verified locally. The original installed SDK and configuration were restored after the direct trials. A tracked whole-package canary with concurrent independent consumers is the next validation gate. No upstream PR is opened on the strength of these direct-only results.
+All four hashes were independently verified locally. The original installed SDK and configuration were restored after the direct trials. Subsequent integration validation is recorded below; its negative result limits the claim to the measured framing correction and bounded private-session benefit.
+
+## Subsequent integration limit
+
+A separate integration run used the signed tracked package `5df6bdf5fb26566d6cbfa7cefa4632a226fce910`, bundle SHA-256 `3850d7cd4c42e8318d414f4e94851cf34518f7f54d1aa780b4de777fabc2395e`. Startup NIC capture confirmed actual channel-zero START slots 11 through 16 with sign 8 and magic 8/0. The target nevertheless reached a five-second incoming-media gap after about 80 seconds of the overall exposure. It had delivered 868 matching assembled, valid and Readable frames and still reported LIVE with one consumer. Event-loop maximum near the gap was 40.567 milliseconds.
+
+The concurrent-consumer pipeline had processed media successfully before the input gap, without a decoder-error or queue-backlog explanation. A sibling source had delayed startup, so this run does not reproduce the direct arms' startup history exactly. It failed the planned longer acceptance window. The original SDK and configuration were restored automatically.
+
+This negative result is material: nonzero START framing does not eliminate all incoming-media silences. It does not erase the bounded direct reversal, and the direct reversal cannot be promoted into an uninterrupted-delivery claim.
+
+| Local artifact under `/tmp/eufy-doorbell-runtime-20261023/production-sdk-canary/` | SHA-256                                                            |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `summary.json`                                                                    | `f3b573889b115ac4bbac7570ef5f521ac1f05314c7ab8fffb1141fbce0981182` |
+| `canary.json`                                                                     | `7081abbcdf7dc8ab23ddb931080cff0ad164a26c9b5a46cdb0ac1aa8ce092818` |
+| `restoration-verification.json`                                                   | `e9ed52f88059fdfcd63ac36b576e34b8bf1822d07a731972fc0c87ebe1d25d26` |
+
+All three artifact hashes were independently verified. Raw captures and full device-specific observations remain private.

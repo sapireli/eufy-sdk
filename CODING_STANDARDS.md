@@ -226,6 +226,8 @@ Retain private raw artifacts and a sanitized, SDK-scoped evidence record for wir
 [channel-zero START record](docs/agents/channel-zero-start-slot-proof.md) is one example. Keep
 consumer names and deployment details out of public SDK evidence. Upstream contributions carry only
 the necessary SDK code and regression coverage, with reproducibility evidence in the commit and PR.
+The channel-zero record includes a later incoming-media gap; preserve contrary results and keep a
+framing correction distinct from uninterrupted-delivery claims.
 
 ## Agent skills
 
