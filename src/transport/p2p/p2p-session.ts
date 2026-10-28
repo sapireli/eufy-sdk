@@ -899,13 +899,11 @@ export class P2PSession extends EventEmitter {
   /**
    * Open the socket and start the lookup → hole-punch handshake.
    *
-   * A socket closed while binding never invokes its bind callback, so the bind wait also settles on the
-   * socket's `close`. After each await (the socket bind and the punch-probe binds), a connect whose
-   * session was closed meanwhile returns without starting the handshake, so it never sends a lookup or
-   * arms a timer on a closed session.
-   *
-   * A socket whose bind fails emits `error` and never invokes its bind callback, so a bind failure closes the
-   * session and rejects with {@link StationUnreachableError} carrying the bind error as its `cause`.
+   * A socket closed or failing while binding never invokes its bind callback, so the bind wait also
+   * settles on the socket's `close` and `error`. On `close`, a connect whose session was closed meanwhile
+   * returns without starting the handshake, so it never sends a lookup or arms a timer on a closed
+   * session. On `error`, connect closes the session and rejects with {@link StationUnreachableError}
+   * carrying the bind error as its `cause`.
    */
   async connect(): Promise<void> {
     if (this.connecting || this.connected) return;
@@ -961,7 +959,7 @@ export class P2PSession extends EventEmitter {
       });
     }
     if (this.cloudLookup) await this.startPunchProbes();
-    if (generation !== this.connectionGeneration) return;
+    if (this.closed) return;
     this.trace({
       phase: "lookup-channels",
       local: !this.cfg.noBroadcast || this.cfg.localAddress !== undefined,

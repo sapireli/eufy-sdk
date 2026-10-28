@@ -15,12 +15,7 @@
  */
 import { EventEmitter } from "node:events";
 import { MegaHttpClient, LoginStatus, SessionExpiredError, type LoginResult } from "../transport/http/mega-client.js";
-import {
-  SecureMqtt,
-  SubscriptionDeniedError,
-  isNotAuthorized,
-  type SecureMqttCredentials,
-} from "../transport/mqtt/secure-mqtt.js";
+import { SecureMqtt, isNotAuthorized, type SecureMqttCredentials } from "../transport/mqtt/secure-mqtt.js";
 import { mqttAppName, mqttScopeFor, type MqttScope } from "../transport/mqtt/topics.js";
 import { buildAppShapedClientId, mqttUuidFrom } from "../transport/mqtt/app-client-id.js";
 import { parseStateInfoSignal } from "../transport/mqtt/availability.js";
@@ -179,10 +174,9 @@ const DEFAULT_PREWARM_TIERS: readonly PowerTier[] = ["wired", "battery"];
 const SESSION_RECYCLE_WAIT_MS = 5_000;
 
 /**
- * Backoff bounds for bringing push, or one secure-MQTT scope, up again after an attempt failed: the
- * first retry waits the minimum, each following one doubles, capped at the maximum — the same
- * ten-minute ceiling the MCS socket's own reconnect backs off to. The same bounds pace reopening a wired
- * station's closed session.
+ * Backoff bounds for bringing push up again after its startup attempt failed: the first retry waits the
+ * minimum, each following one doubles, capped at the maximum — the same ten-minute ceiling the MCS
+ * socket's own reconnect backs off to.
  */
 const PUSH_RETRY_MIN_MS = 30_000;
 const PUSH_RETRY_MAX_MS = 600_000;
@@ -281,12 +275,6 @@ export class EufyMega extends EventEmitter {
    * starts empty.
    */
   private readonly mqttSubscribed = new WeakMap<RealtimeTransport, Set<string>>();
-  /**
-   * Per scope, when {@link syncMqttRoster} may next attempt a bring-up that failed, and the delay that
-   * set it: doubled from {@link PUSH_RETRY_MIN_MS} on each consecutive failure, capped at
-   * {@link PUSH_RETRY_MAX_MS}, dropped on success and with the transports.
-   */
-  private readonly mqttRetry = new Map<MqttScope, { at: number; delayMs: number }>();
   /** Device list/record/capability resolution + the frame→caps cache. */
   private readonly registry: DeviceRegistry;
   private pushClient?: PushClient;
@@ -357,8 +345,6 @@ export class EufyMega extends EventEmitter {
   private readonly pollTimer = new Timer();
   /** Armed while a failed push bring-up waits to be retried; cancelled by {@link disconnect}. */
   private readonly pushRetryTimer = new Timer();
-  /** Per wired station, the reopen loop {@link retryWiredStation} runs after its session closed; cleared by {@link disconnect}. */
-  private readonly wiredReopenTimers = new Map<string, Timer>();
 
   constructor(opts: EufyMegaOptions) {
     super();
@@ -399,10 +385,7 @@ export class EufyMega extends EventEmitter {
         await this.registry.getDevices();
       },
       onConnect: (sn) => this.emit("p2pConnect", sn),
-      onClose: (sn) => {
-        this.emit("p2pClose", sn);
-        if (!this.wiredReopenTimers.has(sn)) this.retryWiredStation(sn);
-      },
+      onClose: (sn) => this.emit("p2pClose", sn),
       onError: (e) => this.reportError(e),
       onLevel2Ready: (sn, cipherId) => this.emit("p2pLevel2Ready", { stationSn: sn, cipherId }),
       onFrame: (stationSn, f) => this.onP2PFrame(stationSn, f),
@@ -548,15 +531,9 @@ export class EufyMega extends EventEmitter {
         return;
       }
       this.transports.set(scope, mqtt);
-      this.mqttRetry.delete(scope);
       await this.subscribeMqttDevices(scope, mqtt);
     })().catch((e) => {
-      if (this.mqttReady.get(scope) === attempt) {
-        this.mqttReady.delete(scope);
-        const prev = this.mqttRetry.get(scope)?.delayMs;
-        const delayMs = prev ? Math.min(prev * 2, PUSH_RETRY_MAX_MS) : PUSH_RETRY_MIN_MS;
-        this.mqttRetry.set(scope, { at: Date.now() + delayMs, delayMs });
-      }
+      if (this.mqttReady.get(scope) === attempt) this.mqttReady.delete(scope);
       throw e;
     });
     this.mqttReady.set(scope, attempt);
@@ -895,7 +872,7 @@ export class EufyMega extends EventEmitter {
   private recycleStandaloneSession(sn: string): Promise<void> {
     const releaseWrite = new Promise<void>((resolve) => void setTimeout(resolve, SESSION_RECYCLE_WAIT_MS).unref?.());
     return Promise.race([
-      this.p2p.resetStandaloneSession(sn).finally(() => void this.reopenWiredStation(sn)?.catch(() => {})),
+      this.p2p.resetStandaloneSession(sn).finally(() => this.reopenWiredStation(sn)),
       releaseWrite.then(() =>
         this.opts.logger?.debug(
           `[session ${sn}] recycle still waiting on an attached viewer — releasing the write that asked for it`,
@@ -904,49 +881,14 @@ export class EufyMega extends EventEmitter {
     ]);
   }
 
-  /**
-   * Reopen a wired station's persistent session while the generation that warmed it is current.
-   *
-   * Answers the open, or `undefined` when no generation is current or `sn` is not a wired station of the
-   * roster. A failed open is reported and rejects; one ended by the generation's abort resolves silently.
-   */
-  private reopenWiredStation(sn: string): Promise<void> | undefined {
+  /** Reopen a wired station that {@link recycleStandaloneSession} closed, while the generation that warmed it is current. */
+  private reopenWiredStation(sn: string): void {
     const generation = this.realtimeGeneration;
     if (generation?.epoch !== this.realtimeEpoch) return;
     if (this.p2p.stationKeyOf(sn) !== sn || !this.registry.p2pDevices().some((d) => d.sn === sn)) return;
     if (this.stationPower(sn) !== "wired") return;
-    return this.p2p.ensureStation(sn, generation.abort.signal).catch((error) => {
-      if (generation.abort.signal.aborted) return;
-      this.reportError(error);
-      throw error;
-    });
-  }
-
-  /**
-   * Reopen a station whose session closed, through {@link reopenWiredStation}, backing off from
-   * {@link PUSH_RETRY_MIN_MS} doubling to {@link PUSH_RETRY_MAX_MS} until an attempt connects, the
-   * station no longer qualifies, or the generation is aborted.
-   *
-   * A station ends the session itself when it reboots or updates its firmware, and stays unreachable
-   * for a while after. The first attempt therefore waits the minimum as well. One loop runs per station,
-   * and a close while it runs (its own failed attempt's included) does not start a second. A close made
-   * by {@link recycleStandaloneSession} reaches here too. That recycle reopens the station itself once
-   * the close settles, so this loop's first attempt joins that session, open or opening, rather than dialling
-   * a second.
-   */
-  private retryWiredStation(sn: string, delayMs = PUSH_RETRY_MIN_MS): void {
-    const timer = this.wiredReopenTimers.get(sn) ?? new Timer();
-    this.wiredReopenTimers.set(sn, timer);
-    const end = () => {
-      if (this.wiredReopenTimers.get(sn) === timer) this.wiredReopenTimers.delete(sn);
-    };
-    timer.arm(delayMs, () => {
-      const open = this.reopenWiredStation(sn);
-      if (!open) return end();
-      open.then(end, () => {
-        if (this.wiredReopenTimers.get(sn) === timer)
-          this.retryWiredStation(sn, Math.min(delayMs * 2, PUSH_RETRY_MAX_MS));
-      });
+    void this.p2p.ensureStation(sn, generation.abort.signal).catch((error) => {
+      if (!generation.abort.signal.aborted) this.reportError(error);
     });
   }
 
@@ -1736,6 +1678,7 @@ export class EufyMega extends EventEmitter {
    *
    * A device with changed params is re-resolved by {@link widenCapabilities} once per pass, however many
    * of its params moved, since each re-resolution is a cloud param-list read.
+   *
    * Then brings the secure-MQTT plane up to the roster ({@link syncMqttRoster}): the startup bring-up
    * sized it from the roster at login, which is empty when the cloud was unreachable then.
    *
@@ -2117,11 +2060,8 @@ export class EufyMega extends EventEmitter {
    * Subscribe the devices on one credential scope; a failing subscribe is reported, not fatal (one
    * unreachable device must not stop the rest of the roster from coming up).
    * A device is recorded in that transport's {@link mqttSubscribed} entry before its subscribe is awaited,
-   * so a pass running alongside skips it, and removed again when the subscribe fails in transport, so a later
-   * {@link syncMqttRoster} pass retries it. A device the broker refuses outright
-   * ({@link SubscriptionDeniedError}) stays recorded: that transport answers it the same way every time, so
-   * it is attempted once per transport. Stops once `transport` is no longer the one installed for
-   * `scope`.
+   * whatever the outcome, so a pass running alongside or after skips it: each device is attempted once
+   * per transport.
    *
    * A Tuya clean-line device (`eufy_home_tuya`) is not subscribed: its state lives on the Tuya cloud,
    * and the broker refuses its `eufy_home` topics on every credential.
@@ -2130,14 +2070,10 @@ export class EufyMega extends EventEmitter {
     let subscribed = this.mqttSubscribed.get(transport);
     if (!subscribed) this.mqttSubscribed.set(transport, (subscribed = new Set()));
     for (const d of this.getMqttDevices().filter((dev) => !isTuyaVacuum(dev) && mqttScopeFor(dev) === scope)) {
-      if (this.transports.get(scope) !== transport) return;
       if (subscribed.has(d.sn)) continue;
       subscribed.add(d.sn);
       try {
-        await transport.subscribeDevice(d).catch((e: unknown) => {
-          if (!(e instanceof SubscriptionDeniedError)) subscribed.delete(d.sn);
-          throw e;
-        });
+        await transport.subscribeDevice(d);
         await this.sendRealtimeInit(d.sn);
       } catch (e) {
         this.reportError(e);
@@ -2148,15 +2084,13 @@ export class EufyMega extends EventEmitter {
   /**
    * Start every credential scope the roster now needs and has no transport for, and subscribe the
    * devices that joined a scope already up — each scope's failure reported, not thrown. A no-op once
-   * the realtime generation is superseded or was never started. A scope whose bring-up failed is
-   * attempted again here once its {@link mqttRetry} backoff has elapsed.
+   * the realtime generation is superseded or was never started.
    */
   private async syncMqttRoster(): Promise<void> {
     if (this.realtimeGeneration?.epoch !== this.realtimeEpoch) return;
     await Promise.all(
       this.mqttScopesInUse().map(async (scope) => {
         const transport = this.transports.get(scope);
-        if (!transport && (this.mqttRetry.get(scope)?.at ?? 0) > Date.now()) return;
         try {
           await (transport ? this.subscribeMqttDevices(scope, transport) : this.ensureMqttStarted(scope));
         } catch (e) {
@@ -2627,7 +2561,6 @@ export class EufyMega extends EventEmitter {
     await Promise.all([...this.transports.values()].map((t) => t.disconnect()));
     this.transports.clear();
     this.mqttReady.clear();
-    this.mqttRetry.clear();
   }
 
   /**
@@ -2641,8 +2574,6 @@ export class EufyMega extends EventEmitter {
   private async teardownRealtime(): Promise<void> {
     this.pollTimer.cancel();
     this.pushRetryTimer.cancel();
-    for (const timer of this.wiredReopenTimers.values()) timer.cancel();
-    this.wiredReopenTimers.clear();
     this.lastStateAnnounced.clear();
     await this.closeMqttTransports();
     this.rtc.close();
