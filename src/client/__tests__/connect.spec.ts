@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EufyMega } from "../eufy-mega.js";
 import { LoginStatus, SessionExpiredError } from "../../transport/http/mega-client.js";
 import { PushClient } from "../../transport/push/push-client.js";
+import { SubscriptionDeniedError } from "../../transport/mqtt/secure-mqtt.js";
 import type { EufyDevice } from "../../core/types.js";
 
 /**
@@ -440,6 +441,139 @@ describe("EufyMega auto-realtime", () => {
     expect(c.mqtt.mock.calls.map((a) => a[0]).sort()).toEqual(["default", "eufy_life"]);
   });
 
+  it("a poll pass starts the scope a login-time empty roster skipped, then subscribes later devices", async () => {
+    const c = makeClient({ mqtt: 0 }, { pollMs: 0 });
+    vi.spyOn((c.eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    await (c.eufy as any).ensureRealtime();
+    expect(c.mqtt).not.toHaveBeenCalled();
+
+    const first = { sn: "M1", category: "eufy_mega" } as unknown as EufyDevice;
+    const later = { sn: "M2", category: "eufy_mega" } as unknown as EufyDevice;
+    const transport = { subscribeDevice: vi.fn(async (_: EufyDevice) => {}), disconnect: vi.fn(async () => {}) };
+    c.mqtt.mockResolvedValue(transport);
+    (c.eufy as any).getMqttDevices.mockReturnValue([first]);
+    await (c.eufy as any).pollOnce();
+    (c.eufy as any).getMqttDevices.mockReturnValue([first, later]);
+    await (c.eufy as any).pollOnce();
+
+    expect(c.mqtt.mock.calls.map((a) => a[0])).toEqual(["default"]);
+    expect(transport.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1", "M2"]);
+  });
+
+  it("a subscribe loop cut off by disconnect leaves the next login's transport to subscribe every device", async () => {
+    const c = makeClient({ mqtt: 0 });
+    const dev = (sn: string) => ({ sn, category: "eufy_mega" }) as unknown as EufyDevice;
+    (c.eufy as any).getMqttDevices.mockReturnValue([dev("M1"), dev("M2"), dev("M3")]);
+    vi.spyOn(c.eufy as any, "sendRealtimeInit").mockResolvedValue(undefined);
+    c.eufy.on("error", () => {});
+    let release!: () => void;
+    const hang = new Promise<void>((r) => (release = r));
+    const oldT = {
+      subscribeDevice: vi.fn(async (d: EufyDevice) => {
+        if (d.sn === "M1") await hang;
+      }),
+      disconnect: vi.fn(async () => {}),
+    };
+    const newT = { subscribeDevice: vi.fn(async (_: EufyDevice) => {}), disconnect: vi.fn(async () => {}) };
+    c.mqtt.mockResolvedValueOnce(oldT).mockResolvedValueOnce(newT);
+
+    void (c.eufy as any).ensureRealtime().catch(() => {});
+    await vi.waitFor(() => expect(oldT.subscribeDevice).toHaveBeenCalledTimes(1));
+    await c.eufy.disconnect();
+    release();
+    await new Promise((r) => setTimeout(r, 10));
+    await (c.eufy as any).ensureRealtime();
+
+    expect(newT.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1", "M2", "M3"]);
+    expect(oldT.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1"]);
+  });
+
+  it("a poll pass subscribes again a device whose subscribe failed on an earlier pass", async () => {
+    const c = makeClient({ mqtt: 0 }, { pollMs: 0 });
+    vi.spyOn((c.eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    const errors = vi.fn();
+    c.eufy.on("error", errors);
+    const transport = {
+      subscribeDevice: vi.fn(async (_: EufyDevice) => {}),
+      disconnect: vi.fn(async () => {}),
+    };
+    transport.subscribeDevice.mockRejectedValueOnce(new Error("subscribe timed out"));
+    c.mqtt.mockResolvedValue(transport);
+    (c.eufy as any).getMqttDevices.mockReturnValue([{ sn: "M1", category: "eufy_mega" } as unknown as EufyDevice]);
+
+    await (c.eufy as any).ensureRealtime();
+    expect(errors).toHaveBeenCalledTimes(1);
+    await (c.eufy as any).pollOnce();
+    await (c.eufy as any).pollOnce();
+
+    expect(transport.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1", "M1"]);
+  });
+
+  it("a poll pass does not subscribe again a device the broker refused on that transport", async () => {
+    const c = makeClient({ mqtt: 0 }, { pollMs: 0 });
+    vi.spyOn((c.eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    const errors = vi.fn();
+    c.eufy.on("error", errors);
+    const transport = {
+      subscribeDevice: vi.fn(async (_: EufyDevice) => {}),
+      disconnect: vi.fn(async () => {}),
+    };
+    transport.subscribeDevice.mockRejectedValue(new SubscriptionDeniedError("subscribe M1: every topic denied"));
+    c.mqtt.mockResolvedValue(transport);
+    (c.eufy as any).getMqttDevices.mockReturnValue([{ sn: "M1", category: "eufy_mega" } as unknown as EufyDevice]);
+
+    await (c.eufy as any).ensureRealtime();
+    await (c.eufy as any).pollOnce();
+    await (c.eufy as any).pollOnce();
+
+    expect(transport.subscribeDevice.mock.calls.map(([d]) => d.sn)).toEqual(["M1"]);
+    expect(errors).toHaveBeenCalledTimes(1);
+  });
+
+  it("a poll pass retries a failed scope only after its backoff, doubling between failures", async () => {
+    const c = makeClient({ mqtt: 1 }, { pollMs: 0 });
+    vi.spyOn((c.eufy as any).registry, "pollChanges").mockResolvedValue({
+      params: [],
+      added: [],
+      removed: [],
+      reported: [],
+    });
+    c.mqtt.mockRejectedValue(new Error("broker down"));
+    const errors = vi.fn();
+    c.eufy.on("error", errors);
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+
+    await (c.eufy as any).ensureRealtime();
+    await (c.eufy as any).pollOnce();
+    expect(c.mqtt).toHaveBeenCalledTimes(1);
+    now += 30_000;
+    await (c.eufy as any).pollOnce();
+    expect(c.mqtt).toHaveBeenCalledTimes(2);
+    now += 30_000;
+    await (c.eufy as any).pollOnce();
+    expect(c.mqtt).toHaveBeenCalledTimes(2);
+    now += 30_000;
+    await (c.eufy as any).pollOnce();
+    expect(c.mqtt).toHaveBeenCalledTimes(3);
+    expect(errors).toHaveBeenCalledTimes(3);
+  });
+
   it("does not open a second transport when every MQTT device is on one scope", async () => {
     const c = makeClient({ mqtt: 2, category: "eufy_life" });
     await (c.eufy as any).ensureRealtime();
@@ -569,5 +703,47 @@ describe("EufyMega sessionExpired event", () => {
     await eufy.getDevices();
     expect(register).toHaveBeenCalledWith("T2880P0000000000", "T2880P0000000000");
     expect(register).toHaveBeenCalledWith("T2266P0000000000", "tuya-dev-1");
+  });
+});
+
+/**
+ * The push handler runs inside the MCS socket's `data` callback, so a throw out of it is an uncaught
+ * exception. A store whose `save` fails (a full or read-only disk) is reported, and the channel keeps
+ * delivering.
+ */
+describe("EufyMega push persistence failure", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("reports a failed pushStore save through error and keeps handling pushes", async () => {
+    const failure = Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    const pushStore = {
+      load: () => ({
+        creds: { fid: "f", androidId: "0", securityToken: "0", fcmToken: "t", createdAt: 0 },
+        persistentIds: [],
+      }),
+      save: vi.fn(() => {
+        throw failure;
+      }),
+      clear: vi.fn(),
+    };
+    const c = makeClient({ mqtt: 0 }, { pushStore });
+    c.push.mockRestore();
+    vi.spyOn((c.eufy as any).mega, "registerPushToken").mockResolvedValue(undefined);
+    vi.spyOn(PushClient.prototype, "connect").mockImplementation(function (this: PushClient) {
+      this.emit("connect");
+    });
+    const errors: Error[] = [];
+    c.eufy.on("error", (e) => errors.push(e));
+    const raw: unknown[] = [];
+    c.eufy.on("push", (ev) => raw.push(ev));
+    const client: PushClient = await (c.eufy as any).startPush();
+
+    expect(() => client.emit("push", { payload: {} })).not.toThrow();
+    expect(() => client.emit("push", { payload: {} })).not.toThrow();
+
+    expect(pushStore.save).toHaveBeenCalledTimes(2);
+    expect(errors).toEqual([failure, failure]);
+    expect(raw).toHaveLength(2);
+    client.close();
   });
 });
